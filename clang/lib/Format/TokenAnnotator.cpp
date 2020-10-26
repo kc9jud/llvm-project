@@ -4144,7 +4144,7 @@ bool TokenAnnotator::canBreakBefore(const AnnotatedLine &Line,
     return false;
 
   if (Right.is(tok::r_paren)) {
-    return Style.DanglingParenthesis;
+    return (Style.AlignAfterOpenBracket == FormatStyle::BAS_AlwaysBreakAndCloseOnNextLine);
   }
   if (Right.is(TT_TemplateCloser))
     return false;
