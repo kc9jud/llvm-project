@@ -324,7 +324,9 @@ bool ContinuationIndenter::canBreak(const LineState &State) {
     return false;
 
   if (Style.AlignAfterOpenBracket == FormatStyle::BAS_AlwaysBreakAndCloseOnNextLine) {
-    if (Current.is(tok::r_paren) && !State.Stack.back().BreakBeforeClosingParen)
+    if (Current.isOneOf(tok::r_paren, TT_TemplateCloser) && !State.Stack.back().BreakBeforeClosingParen)
+      return false;
+    if (Current.is(tok::r_brace) && !State.Stack.back().BreakBeforeClosingBrace)
       return false;
   }
 
@@ -344,7 +346,9 @@ bool ContinuationIndenter::mustBreak(const LineState &State) {
   if (State.Stack.back().BreakBeforeClosingBrace &&
       Current.closesBlockOrBlockTypeList(Style))
     return true;
-  if(State.Stack.back().BreakBeforeClosingParen && Current.is(tok::r_paren))
+  if(State.Stack.back().BreakBeforeClosingBrace && Current.is(tok::r_brace) && Current.is(BK_BracedInit) && Style.Cpp11BracedListStyle)
+    return true;
+  if(State.Stack.back().BreakBeforeClosingParen && Current.isOneOf(tok::r_paren, TT_TemplateCloser))
     return true;
   if (Previous.is(tok::semi) && State.LineContainsContinuedForLoopSection)
     return true;
@@ -939,7 +943,7 @@ unsigned ContinuationIndenter::addTokenOnNewLine(LineState &State,
        opensProtoMessageField(*PreviousNonComment, Style)))
     State.Stack.back().BreakBeforeClosingBrace = true;
 
-  if (PreviousNonComment && PreviousNonComment->is(tok::l_paren))
+  if (PreviousNonComment && PreviousNonComment->isOneOf(tok::l_paren, TT_TemplateOpener))
     State.Stack.back().BreakBeforeClosingParen = (Style.AlignAfterOpenBracket == FormatStyle::BAS_AlwaysBreakAndCloseOnNextLine);
 
   if (State.Stack.back().AvoidBinPacking) {
@@ -1014,7 +1018,7 @@ unsigned ContinuationIndenter::getNewLineColumn(const LineState &State) {
     if (Current.closesBlockOrBlockTypeList(Style))
       return State.Stack[State.Stack.size() - 2].NestedBlockIndent;
     if (Current.MatchingParen && Current.MatchingParen->is(BK_BracedInit))
-      return State.Stack[State.Stack.size() - 2].LastSpace;
+      return State.Stack[State.Stack.size() - 2].LastSpace + Style.ClosingParenOffset;
     return State.FirstIndent;
   }
   // Indent a closing parenthesis at the previous level if followed by a semi,
@@ -1035,9 +1039,9 @@ unsigned ContinuationIndenter::getNewLineColumn(const LineState &State) {
   if (Current.is(tok::r_paren) && State.Stack.size() > 1 &&
       (!Current.Next ||
        Current.Next->isOneOf(tok::semi, tok::kw_const, tok::l_brace)))
-    return State.Stack[State.Stack.size() - 2].LastSpace;
-  if ((Style.AlignAfterOpenBracket == FormatStyle::BAS_AlwaysBreakAndCloseOnNextLine) && Current.is(tok::r_paren) && State.Stack.size() > 1)
-    return State.Stack[State.Stack.size() - 2].LastSpace;
+    return State.Stack[State.Stack.size() - 2].LastSpace + Style.ClosingParenOffset;
+  if ((Style.AlignAfterOpenBracket == FormatStyle::BAS_AlwaysBreakAndCloseOnNextLine) && Current.isOneOf(tok::r_paren, TT_TemplateCloser) && State.Stack.size() > 1)
+    return State.Stack[State.Stack.size() - 2].LastSpace + Style.ClosingParenOffset;
   if (NextNonComment->is(TT_TemplateString) && NextNonComment->closesScope())
     return State.Stack[State.Stack.size() - 2].LastSpace;
   if (Current.is(tok::identifier) && Current.Next &&

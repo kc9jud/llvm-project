@@ -4143,14 +4143,13 @@ bool TokenAnnotator::canBreakBefore(const AnnotatedLine &Line,
   if (Right.is(TT_ImplicitStringLiteral))
     return false;
 
-  if (Right.is(tok::r_paren)) {
+  if (Right.is(tok::r_paren) || Right.is(TT_TemplateCloser))
     return (Style.AlignAfterOpenBracket == FormatStyle::BAS_AlwaysBreakAndCloseOnNextLine);
-  }
-  if (Right.is(TT_TemplateCloser))
-    return false;
   if (Right.is(tok::r_square) && Right.MatchingParen &&
       Right.MatchingParen->is(TT_LambdaLSquare))
     return false;
+  if (Right.is(tok::r_brace) && Style.Cpp11BracedListStyle && Right.MatchingParen && Right.MatchingParen->BlockKind != BK_Block)
+    return (Style.AlignAfterOpenBracket == FormatStyle::BAS_AlwaysBreakAndCloseOnNextLine);
 
   // We only break before r_brace if there was a corresponding break before
   // the l_brace, which is tracked by BreakBeforeClosingBrace.

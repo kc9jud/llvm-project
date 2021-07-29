@@ -1878,6 +1878,9 @@ struct FormatStyle {
   /// The inheritance list style to use.
   BreakInheritanceListStyle BreakInheritanceList;
 
+  /// The extra indent or outdent of closing parentheses on their own line.
+  int ClosingParenOffset;
+
   /// If ``true``, consecutive namespace declarations will be on the same
   /// line. If ``false``, each namespace is declared on a new line.
   /// \code
@@ -3431,6 +3434,7 @@ struct FormatStyle {
            BreakStringLiterals == R.BreakStringLiterals &&
            ColumnLimit == R.ColumnLimit && CommentPragmas == R.CommentPragmas &&
            BreakInheritanceList == R.BreakInheritanceList &&
+           ClosingParenOffset == R.ClosingParenOffset &&
            ConstructorInitializerAllOnOneLineOrOnePerLine ==
                R.ConstructorInitializerAllOnOneLineOrOnePerLine &&
            ConstructorInitializerIndentWidth ==

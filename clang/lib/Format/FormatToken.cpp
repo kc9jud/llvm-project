@@ -199,7 +199,7 @@ void CommaSeparatedList::precomputeFormattingInfos(const FormatToken *Token) {
       const FormatToken *NonCommentEnd = ItemEnd->getPreviousNonComment();
       ItemLengths.push_back(CodePointsBetween(ItemBegin, NonCommentEnd));
       if (Style.Cpp11BracedListStyle &&
-          !ItemEnd->Previous->isTrailingComment()) {
+          !ItemEnd->Previous->isTrailingComment() && (Style.AlignAfterOpenBracket != FormatStyle::BAS_AlwaysBreakAndCloseOnNextLine)) {
         // In Cpp11 braced list style, the } and possibly other subsequent
         // tokens will need to stay on a line with the last element.
         while (ItemEnd->Next && !ItemEnd->Next->CanBreakBefore)
