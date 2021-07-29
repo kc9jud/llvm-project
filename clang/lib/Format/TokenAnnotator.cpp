@@ -4125,6 +4125,12 @@ bool TokenAnnotator::canBreakBefore(const AnnotatedLine &Line,
     return false;
   if (Left.is(TT_TemplateCloser) && Right.is(TT_TemplateOpener))
     return true;
+  if (Left.is(TT_TemplateCloser) && Right.isOneOf(TT_TemplateCloser, tok::r_paren, tok::r_square))
+    return (Style.AlignAfterOpenBracket == FormatStyle::BAS_AlwaysBreakAndCloseOnNextLine);
+  if (Left.is(TT_TemplateCloser) && Right.is(tok::r_brace) && Style.Cpp11BracedListStyle && (Right.MatchingParen && Right.MatchingParen->isNot(BK_Block)))
+    return (Style.AlignAfterOpenBracket == FormatStyle::BAS_AlwaysBreakAndCloseOnNextLine);
+  if (Left.is(TT_TemplateCloser) && Right.is(tok::r_brace))
+    return Right.MatchingParen && Right.MatchingParen->is(BK_Block);
   if (Left.isOneOf(TT_TemplateCloser, TT_UnaryOperator) ||
       Left.is(tok::kw_operator))
     return false;
@@ -4148,7 +4154,7 @@ bool TokenAnnotator::canBreakBefore(const AnnotatedLine &Line,
   if (Right.is(tok::r_square) && Right.MatchingParen &&
       Right.MatchingParen->is(TT_LambdaLSquare))
     return false;
-  if (Right.is(tok::r_brace) && Style.Cpp11BracedListStyle && Right.MatchingParen && Right.MatchingParen->BlockKind != BK_Block)
+  if (Right.is(tok::r_brace) && Style.Cpp11BracedListStyle && Right.MatchingParen && Right.MatchingParen->isNot(BK_Block))
     return (Style.AlignAfterOpenBracket == FormatStyle::BAS_AlwaysBreakAndCloseOnNextLine);
 
   // We only break before r_brace if there was a corresponding break before
