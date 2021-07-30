@@ -523,6 +523,13 @@ void UnwrappedLineParser::calculateBraceTypes(bool ExpectClassBody) {
             ++ReadTokens;
             ProbablyBracedList = NextTok->isNot(tok::l_square);
           }
+          // If the corresponding opening brace immediately follows a braced
+          // initializer list, then this is not probably a braced initializer
+          // list.
+          ProbablyBracedList = ProbablyBracedList &&
+            !(Style.isCpp() &&
+              LBraceStack.back()->Previous && LBraceStack.back()->Previous->is(tok::r_brace) &&
+              LBraceStack.back()->Previous->getBlockKind() == BK_BracedInit);
         }
         if (ProbablyBracedList) {
           Tok->setBlockKind(BK_BracedInit);
