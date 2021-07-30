@@ -1155,9 +1155,13 @@ unsigned ContinuationIndenter::getNewLineColumn(const LineState &State) {
   if (PreviousNonComment && PreviousNonComment->is(TT_InheritanceColon) &&
       Style.BreakInheritanceList == FormatStyle::BILS_AfterColon)
     return State.Stack.back().Indent;
-  if (NextNonComment->isOneOf(TT_CtorInitializerColon, TT_InheritanceColon,
+  if (Current.isNot(TT_LineComment) &&
+      NextNonComment->isOneOf(TT_CtorInitializerColon, TT_InheritanceColon,
                               TT_InheritanceComma))
     return State.FirstIndent + Style.ConstructorInitializerIndentWidth;
+  if (Current.is(TT_LineComment) &&
+      NextNonComment->isOneOf(TT_CtorInitializerColon, TT_InheritanceColon))
+    return State.FirstIndent;
   if (Previous.is(tok::r_paren) && !Current.isBinaryOperator() &&
       !Current.isOneOf(tok::colon, tok::comment))
     return ContinuationIndent;
