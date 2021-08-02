@@ -589,6 +589,10 @@ template <> struct MappingTraits<FormatStyle> {
             FormatStyle::RTBS_TopLevelDefinitions;
     }
 
+    IO.mapOptional("AlwaysBreakConstructorInitializers",
+                   Style.AlwaysBreakConstructorInitializers);
+    IO.mapOptional("AlwaysBreakInheritanceList",
+                   Style.AlwaysBreakInheritanceList);
     IO.mapOptional("AlwaysBreakBeforeMultilineStrings",
                    Style.AlwaysBreakBeforeMultilineStrings);
     IO.mapOptional("AlwaysBreakTemplateDeclarations",
@@ -1002,6 +1006,8 @@ FormatStyle getLLVMStyle(FormatStyle::LanguageKind Language) {
   LLVMStyle.AlwaysBreakAfterReturnType = FormatStyle::RTBS_None;
   LLVMStyle.AlwaysBreakAfterDefinitionReturnType = FormatStyle::DRTBS_None;
   LLVMStyle.AlwaysBreakBeforeMultilineStrings = false;
+  LLVMStyle.AlwaysBreakConstructorInitializers = false;
+  LLVMStyle.AlwaysBreakInheritanceList = false;
   LLVMStyle.AlwaysBreakTemplateDeclarations = FormatStyle::BTDS_MultiLine;
   LLVMStyle.AttributeMacros.push_back("__capability");
   LLVMStyle.BinPackArguments = true;

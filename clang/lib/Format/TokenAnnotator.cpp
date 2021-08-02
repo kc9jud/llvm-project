@@ -953,7 +953,7 @@ private:
           FormatToken *PrevPrev = Prev->getPreviousNonComment();
           if (PrevPrev && PrevPrev->isOneOf(tok::r_paren, tok::kw_noexcept))
             Tok->setType(TT_CtorInitializerColon);
-        } else
+        } else if (!Prev->isAccessSpecifier())
           Tok->setType(TT_InheritanceColon);
       } else if (canBeObjCSelectorComponent(*Tok->Previous) && Tok->Next &&
                  (Tok->Next->isOneOf(tok::r_paren, tok::comma) ||
@@ -3725,6 +3725,22 @@ bool TokenAnnotator::mustBreakBefore(const AnnotatedLine &Line,
       return true;
   }
 
+  if (Right.is(TT_CtorInitializerColon) &&
+      Style.BreakConstructorInitializers == FormatStyle::BCIS_BeforeColon &&
+      Style.AlwaysBreakConstructorInitializers)
+    return true;
+  if (Left.is(TT_CtorInitializerColon) &&
+      Style.BreakConstructorInitializers == FormatStyle::BCIS_AfterColon &&
+      Style.AlwaysBreakConstructorInitializers)
+    return true;
+  if (Right.is(TT_InheritanceColon) &&
+      Style.BreakInheritanceList == FormatStyle::BILS_BeforeColon &&
+      Style.AlwaysBreakInheritanceList)
+    return true;
+  if (Left.is(TT_InheritanceColon) &&
+      Style.BreakInheritanceList == FormatStyle::BILS_AfterColon &&
+      Style.AlwaysBreakInheritanceList)
+    return true;
   if (Right.is(tok::comment))
     return Left.isNot(BK_BracedInit) && Left.isNot(TT_CtorInitializerColon) &&
            (Right.NewlinesBefore > 0 && Right.HasUnescapedNewline);

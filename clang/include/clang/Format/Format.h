@@ -867,6 +867,24 @@ struct FormatStyle {
   /// \endcode
   bool AlwaysBreakBeforeMultilineStrings;
 
+  /// If ``true``, always break before constructor initializers.
+  ///
+  /// \code
+  ///    true:                              false:
+  ///    Foo::Foo(const Bar& bar)    vs.    Foo::Foo(const Bar& bar) : bar_{bar}
+  ///        : bar_{bar}
+  /// \endcode
+  bool AlwaysBreakConstructorInitializers;
+
+  /// If ``true``, always break before inheritance list.
+  ///
+  /// \code
+  ///    true:                                  false:
+  ///    class Foo                      vs.     class Foo : public Bar
+  ///        : public Bar
+  /// \endcode
+  bool AlwaysBreakInheritanceList;
+
   /// Different ways to break after the template declaration.
   enum BreakTemplateDeclarationsStyle : unsigned char {
     /// Do not force break before declaration.
@@ -3419,6 +3437,9 @@ struct FormatStyle {
            AlwaysBreakAfterReturnType == R.AlwaysBreakAfterReturnType &&
            AlwaysBreakBeforeMultilineStrings ==
                R.AlwaysBreakBeforeMultilineStrings &&
+           AlwaysBreakConstructorInitializers ==
+               R.AlwaysBreakConstructorInitializers &&
+           AlwaysBreakInheritanceList == R.AlwaysBreakInheritanceList &&
            AlwaysBreakTemplateDeclarations ==
                R.AlwaysBreakTemplateDeclarations &&
            AttributeMacros == R.AttributeMacros &&
