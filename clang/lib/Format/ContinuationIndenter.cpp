@@ -645,7 +645,7 @@ void ContinuationIndenter::addTokenOnCurrentLine(LineState &State, bool DryRun,
       (Previous.isOneOf(tok::l_paren, TT_TemplateOpener, tok::l_square) ||
        (Previous.is(tok::l_brace) && Previous.isNot(BK_Block) &&
         Style.Cpp11BracedListStyle)) &&
-      State.Column > getNewLineColumn(State) &&
+      State.Column >= getNewLineColumn(State) &&
       (!Previous.Previous || !Previous.Previous->isOneOf(
                                  tok::kw_for, tok::kw_while, tok::kw_switch)) &&
       // Don't do this for simple (no expressions) one-argument function calls
