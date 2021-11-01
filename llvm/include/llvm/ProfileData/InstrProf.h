@@ -1105,6 +1105,7 @@ namespace RawInstrProf {
 // sensitive records.
 // Version 6: Added binary id.
 // Version 7: Reorder binary id and include version in signature.
+// Version 8: Use relative counter pointer.
 const uint64_t Version = INSTR_PROF_RAW_VERSION;
 
 template <class IntPtrT> inline uint64_t getMagic();
@@ -1143,8 +1144,8 @@ void getMemOPSizeRangeFromOption(StringRef Str, int64_t &RangeStart,
 
 // Create a COMDAT variable INSTR_PROF_RAW_VERSION_VAR to make the runtime
 // aware this is an ir_level profile so it can set the version flag.
-void createIRLevelProfileFlagVar(Module &M, bool IsCS,
-                                 bool InstrEntryBBEnabled);
+GlobalVariable *createIRLevelProfileFlagVar(Module &M, bool IsCS,
+                                            bool InstrEntryBBEnabled);
 
 // Create the variable for the profile file name.
 void createProfileFileNameVar(Module &M, StringRef InstrProfileOutput);

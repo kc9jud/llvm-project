@@ -56,7 +56,10 @@ if (FLANG_INCLUDE_TESTS)
 endif()
 
 if (FLANG_BUILD_EXAMPLES)
-  list(APPEND FLANG_TEST_DEPENDS flangHelloWorldPlugin)
+  list(APPEND FLANG_TEST_DEPENDS
+    flangPrintFunctionNames
+    flangOmpReport
+    )
 endif ()
 
 add_custom_target(flang-test-depends DEPENDS ${FLANG_TEST_DEPENDS})

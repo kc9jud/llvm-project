@@ -149,8 +149,8 @@ def err_nullability_conflicting : Error<
 
 // OpenCL Section 6.8.g
 def err_opencl_unknown_type_specifier : Error<
-  "%select{OpenCL C|C++ for OpenCL}0 version %1 does not support the "
-  "'%2' %select{type qualifier|storage class specifier}3">;
+  "%0 does not support the '%1' "
+  "%select{type qualifier|storage class specifier}2">;
 
 def warn_unknown_attribute_ignored : Warning<
   "unknown attribute %0 ignored">, InGroup<UnknownAttributes>;
@@ -306,6 +306,8 @@ def err_opt_not_valid_without_opt : Error<
   "option '%0' cannot be specified without '%1'">;
 def err_opt_not_valid_on_target : Error<
   "option '%0' cannot be specified on this target">;
+def err_invalid_feature_combination : Error<
+  "invalid feature combination: %0">;
 
 // Source manager
 def err_cannot_open_file : Error<"cannot open file '%0': %1">, DefaultFatal;

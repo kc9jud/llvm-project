@@ -9,7 +9,7 @@
 #ifndef LLVM_LIBC_SRC_SUPPORT_FPUTIL_FMA_H
 #define LLVM_LIBC_SRC_SUPPORT_FPUTIL_FMA_H
 
-#include "utils/CPP/TypeTraits.h"
+#include "src/__support/CPP/TypeTraits.h"
 
 #ifdef __x86_64__
 #include "x86_64/FMA.h"
@@ -21,7 +21,7 @@
 namespace __llvm_libc {
 namespace fputil {
 
-// We have a generic implementation available only for single precision fma os
+// We have a generic implementation available only for single precision fma as
 // we restrict it to float values for now.
 template <typename T>
 static inline cpp::EnableIfType<cpp::IsSame<T, float>::Value, T> fma(T x, T y,

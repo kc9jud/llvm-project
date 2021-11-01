@@ -465,7 +465,27 @@ TEST(SelectionTest, CommonAncestor) {
         // Digraph syntax for attributes to avoid accidental annotations.
         class <:[gsl::Owner([[in^t]])]:> X{};
       )cpp",
-       "BuiltinTypeLoc"}};
+       "BuiltinTypeLoc"},
+
+      // This case used to crash - AST has a null Attr
+      {R"cpp(
+        @interface I
+        [[@property(retain, nonnull) <:[My^Object2]:> *x]]; // error-ok
+        @end
+      )cpp",
+       "ObjCPropertyDecl"},
+
+      {R"cpp(
+        typedef int Foo;
+        enum Bar : [[Fo^o]] {};
+      )cpp",
+       "TypedefTypeLoc"},
+      {R"cpp(
+        typedef int Foo;
+        enum Bar : [[Fo^o]];
+      )cpp",
+       "TypedefTypeLoc"},
+  };
 
   for (const Case &C : Cases) {
     trace::TestTracer Tracer;
@@ -717,6 +737,21 @@ TEST(SelectionTest, CreateAll) {
                               return false;
                             });
   EXPECT_EQ(1u, Seen) << "one tree for nontrivial selection";
+}
+
+TEST(SelectionTest, DeclContextIsLexical) {
+  llvm::Annotations Test("namespace a { void $1^foo(); } void a::$2^foo();");
+  auto AST = TestTU::withCode(Test.code()).build();
+  {
+    auto ST = SelectionTree::createRight(AST.getASTContext(), AST.getTokens(),
+                                         Test.point("1"), Test.point("1"));
+    EXPECT_FALSE(ST.commonAncestor()->getDeclContext().isTranslationUnit());
+  }
+  {
+    auto ST = SelectionTree::createRight(AST.getASTContext(), AST.getTokens(),
+                                         Test.point("2"), Test.point("2"));
+    EXPECT_TRUE(ST.commonAncestor()->getDeclContext().isTranslationUnit());
+  }
 }
 
 } // namespace

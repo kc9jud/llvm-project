@@ -40,7 +40,7 @@ static const std::string DefaultIgnoredParameterTypeSuffixes =
                                    "inputit",
                                    "InputIt",
                                    "forwardit",
-                                   "FowardIt",
+                                   "ForwardIt",
                                    "bidirit",
                                    "BidirIt",
                                    "constiterator",
@@ -56,7 +56,7 @@ static const std::string DefaultIgnoredParameterTypeSuffixes =
                                    "reverse_const_iterator",
                                    "ConstReverseIterator",
                                    "Const_Reverse_Iterator",
-                                   "const_reverse_iterator"
+                                   "const_reverse_iterator",
                                    "Constreverseiterator",
                                    "constreverseiterator"});
 

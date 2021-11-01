@@ -99,7 +99,7 @@ void freebsd::Assembler::ConstructJob(Compilation &C, const JobAction &JA,
   case llvm::Triple::sparc:
   case llvm::Triple::sparcel:
   case llvm::Triple::sparcv9: {
-    std::string CPU = getCPUName(Args, getToolChain().getTriple());
+    std::string CPU = getCPUName(D, Args, getToolChain().getTriple());
     CmdArgs.push_back(
         sparc::getSparcAsmModeForCPU(CPU, getToolChain().getTriple()));
     AddAssemblerKPIC(getToolChain(), Args, CmdArgs);
@@ -110,7 +110,7 @@ void freebsd::Assembler::ConstructJob(Compilation &C, const JobAction &JA,
   for (const Arg *A : Args.filtered(options::OPT_ffile_prefix_map_EQ,
                                     options::OPT_fdebug_prefix_map_EQ)) {
     StringRef Map = A->getValue();
-    if (Map.find('=') == StringRef::npos)
+    if (!Map.contains('='))
       D.Diag(diag::err_drv_invalid_argument_to_option)
           << Map << A->getOption().getName();
     else {

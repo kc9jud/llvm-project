@@ -292,7 +292,11 @@ struct MIMGBaseOpcodeInfo {
   bool LodOrClampOrMip;
   bool HasD16;
   bool MSAA;
+  bool BVH;
 };
+
+LLVM_READONLY
+const MIMGBaseOpcodeInfo *getMIMGBaseOpcode(unsigned Opc);
 
 LLVM_READONLY
 const MIMGBaseOpcodeInfo *getMIMGBaseOpcodeInfo(unsigned BaseOpcode);
@@ -785,6 +789,7 @@ inline unsigned getOperandSize(const MCOperandInfo &OpInfo) {
   switch (OpInfo.OperandType) {
   case AMDGPU::OPERAND_REG_IMM_INT32:
   case AMDGPU::OPERAND_REG_IMM_FP32:
+  case AMDGPU::OPERAND_REG_IMM_FP32_DEFERRED:
   case AMDGPU::OPERAND_REG_INLINE_C_INT32:
   case AMDGPU::OPERAND_REG_INLINE_C_FP32:
   case AMDGPU::OPERAND_REG_INLINE_AC_INT32:
@@ -793,6 +798,8 @@ inline unsigned getOperandSize(const MCOperandInfo &OpInfo) {
   case AMDGPU::OPERAND_REG_IMM_V2FP32:
   case AMDGPU::OPERAND_REG_INLINE_C_V2INT32:
   case AMDGPU::OPERAND_REG_INLINE_C_V2FP32:
+  case AMDGPU::OPERAND_KIMM32:
+  case AMDGPU::OPERAND_KIMM16: // mandatory literal is always size 4
     return 4;
 
   case AMDGPU::OPERAND_REG_IMM_INT64:
@@ -804,6 +811,7 @@ inline unsigned getOperandSize(const MCOperandInfo &OpInfo) {
 
   case AMDGPU::OPERAND_REG_IMM_INT16:
   case AMDGPU::OPERAND_REG_IMM_FP16:
+  case AMDGPU::OPERAND_REG_IMM_FP16_DEFERRED:
   case AMDGPU::OPERAND_REG_INLINE_C_INT16:
   case AMDGPU::OPERAND_REG_INLINE_C_FP16:
   case AMDGPU::OPERAND_REG_INLINE_C_V2INT16:

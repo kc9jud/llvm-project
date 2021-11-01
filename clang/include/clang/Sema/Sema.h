@@ -396,8 +396,8 @@ public:
   ///
   /// This is the greatest alignment value supported by load, store, and alloca
   /// instructions, and global values.
-  static const unsigned MaxAlignmentExponent = 29;
-  static const unsigned MaximumAlignment = 1u << MaxAlignmentExponent;
+  static const unsigned MaxAlignmentExponent = 32;
+  static const uint64_t MaximumAlignment = 1ull << MaxAlignmentExponent;
 
   typedef OpaquePtr<DeclGroupRef> DeclGroupPtrTy;
   typedef OpaquePtr<TemplateName> TemplateTy;
@@ -914,10 +914,6 @@ public:
     OpaqueParser = P;
   }
 
-  // Does the work necessary to deal with a SYCL kernel lambda. At the moment,
-  // this just marks the list of lambdas required to name the kernel.
-  void AddSYCLKernelLambda(const FunctionDecl *FD);
-
   class DelayedDiagnostics;
 
   class DelayedDiagnosticsState {
@@ -1218,6 +1214,11 @@ public:
     /// cases in a switch statement).
     ConstantEvaluated,
 
+    /// In addition of being constant evaluated, the current expression
+    /// occurs in an immediate function context - either a consteval function
+    /// or a consteval if function.
+    ImmediateFunctionContext,
+
     /// The current expression is potentially evaluated at run time,
     /// which means that code may be generated to evaluate the value of the
     /// expression at run time.
@@ -1306,8 +1307,14 @@ public:
              Context == ExpressionEvaluationContext::UnevaluatedAbstract ||
              Context == ExpressionEvaluationContext::UnevaluatedList;
     }
+
     bool isConstantEvaluated() const {
-      return Context == ExpressionEvaluationContext::ConstantEvaluated;
+      return Context == ExpressionEvaluationContext::ConstantEvaluated ||
+             Context == ExpressionEvaluationContext::ImmediateFunctionContext;
+    }
+
+    bool isImmediateFunctionContext() const {
+      return Context == ExpressionEvaluationContext::ImmediateFunctionContext;
     }
   };
 
@@ -1419,8 +1426,22 @@ public:
   const llvm::MapVector<FieldDecl *, DeleteLocs> &
   getMismatchingDeleteExpressions() const;
 
-  typedef std::pair<ObjCMethodList, ObjCMethodList> GlobalMethods;
-  typedef llvm::DenseMap<Selector, GlobalMethods> GlobalMethodPool;
+  class GlobalMethodPool {
+  public:
+    using Lists = std::pair<ObjCMethodList, ObjCMethodList>;
+    using iterator = llvm::DenseMap<Selector, Lists>::iterator;
+    iterator begin() { return Methods.begin(); }
+    iterator end() { return Methods.end(); }
+    iterator find(Selector Sel) { return Methods.find(Sel); }
+    std::pair<iterator, bool> insert(std::pair<Selector, Lists> &&Val) {
+      return Methods.insert(Val);
+    }
+    int count(Selector Sel) const { return Methods.count(Sel); }
+    bool empty() const { return Methods.empty(); }
+
+  private:
+    llvm::DenseMap<Selector, Lists> Methods;
+  };
 
   /// Method Pool - allows efficient lookup when typechecking messages to "id".
   /// We need to maintain a list, since selectors can have differing signatures
@@ -1502,15 +1523,19 @@ public:
   /// statements.
   class FPFeaturesStateRAII {
   public:
-    FPFeaturesStateRAII(Sema &S);
-    ~FPFeaturesStateRAII();
+    FPFeaturesStateRAII(Sema &S) : S(S), OldFPFeaturesState(S.CurFPFeatures) {
+      OldOverrides = S.FpPragmaStack.CurrentValue;
+    }
+    ~FPFeaturesStateRAII() {
+      S.CurFPFeatures = OldFPFeaturesState;
+      S.FpPragmaStack.CurrentValue = OldOverrides;
+    }
     FPOptionsOverride getOverrides() { return OldOverrides; }
 
   private:
     Sema& S;
     FPOptions OldFPFeaturesState;
     FPOptionsOverride OldOverrides;
-    int OldEvalMethod;
   };
 
   void addImplicitTypedef(StringRef Name, QualType T);
@@ -3338,6 +3363,8 @@ public:
                                             const AttributeCommonInfo &CI,
                                             bool BestCase,
                                             MSInheritanceModel Model);
+  ErrorAttr *mergeErrorAttr(Decl *D, const AttributeCommonInfo &CI,
+                            StringRef NewUserDiagnostic);
   FormatAttr *mergeFormatAttr(Decl *D, const AttributeCommonInfo &CI,
                               IdentifierInfo *Format, int FormatIdx,
                               int FirstArg);
@@ -3363,6 +3390,7 @@ public:
   EnforceTCBAttr *mergeEnforceTCBAttr(Decl *D, const EnforceTCBAttr &AL);
   EnforceTCBLeafAttr *mergeEnforceTCBLeafAttr(Decl *D,
                                               const EnforceTCBLeafAttr &AL);
+  BTFDeclTagAttr *mergeBTFDeclTagAttr(Decl *D, const BTFDeclTagAttr &AL);
 
   void mergeDeclAttributes(NamedDecl *New, Decl *Old,
                            AvailabilityMergeKind AMK = AMK_Redeclaration);
@@ -3884,6 +3912,8 @@ public:
                                        SourceLocation LParenLoc,
                                        MultiExprArg Args,
                                        SourceLocation RParenLoc,
+                                       Expr *ExecConfig = nullptr,
+                                       bool IsExecConfig = false,
                                        bool AllowRecovery = false);
   ExprResult
   BuildCallToObjectOfClassType(Scope *S, Expr *Object, SourceLocation LParenLoc,
@@ -4686,11 +4716,12 @@ public:
                                  Stmt *SubStmt);
 
   class ConditionResult;
-  StmtResult ActOnIfStmt(SourceLocation IfLoc, bool IsConstexpr,
+
+  StmtResult ActOnIfStmt(SourceLocation IfLoc, IfStatementKind StatementKind,
                          SourceLocation LParenLoc, Stmt *InitStmt,
                          ConditionResult Cond, SourceLocation RParenLoc,
                          Stmt *ThenVal, SourceLocation ElseLoc, Stmt *ElseVal);
-  StmtResult BuildIfStmt(SourceLocation IfLoc, bool IsConstexpr,
+  StmtResult BuildIfStmt(SourceLocation IfLoc, IfStatementKind StatementKind,
                          SourceLocation LParenLoc, Stmt *InitStmt,
                          ConditionResult Cond, SourceLocation RParenLoc,
                          Stmt *ThenVal, SourceLocation ElseLoc, Stmt *ElseVal);
@@ -4889,7 +4920,7 @@ public:
 
   /// DiagnoseUnusedExprResult - If the statement passed in is an expression
   /// whose result is unused, warn.
-  void DiagnoseUnusedExprResult(const Stmt *S);
+  void DiagnoseUnusedExprResult(const Stmt *S, unsigned DiagID);
   void DiagnoseUnusedNestedTypedefs(const RecordDecl *D);
   void DiagnoseUnusedDecl(const NamedDecl *ND);
 
@@ -5094,6 +5125,16 @@ public:
   /// Try to convert an expression \p E to type \p Ty. Returns the result of the
   /// conversion.
   ExprResult tryConvertExprToType(Expr *E, QualType Ty);
+
+  /// Conditionally issue a diagnostic based on the statements's reachability
+  /// analysis.
+  ///
+  /// \param Stmts If Stmts is non-empty, delay reporting the diagnostic until
+  /// the function body is parsed, and then do a basic reachability analysis to
+  /// determine if the statement is reachable. If it is unreachable, the
+  /// diagnostic will not be emitted.
+  bool DiagIfReachable(SourceLocation Loc, ArrayRef<const Stmt *> Stmts,
+                       const PartialDiagnostic &PD);
 
   /// Conditionally issue a diagnostic based on the current
   /// evaluation context.
@@ -9091,6 +9132,19 @@ public:
     return ExprEvalContexts.back().isUnevaluated();
   }
 
+  bool isImmediateFunctionContext() const {
+    assert(!ExprEvalContexts.empty() &&
+           "Must be in an expression evaluation context");
+    for (const ExpressionEvaluationContextRecord &context :
+         llvm::reverse(ExprEvalContexts)) {
+      if (context.isImmediateFunctionContext())
+        return true;
+      if (context.isUnevaluated())
+        return false;
+    }
+    return false;
+  }
+
   /// RAII class used to determine whether SFINAE has
   /// trapped any errors that occur during template argument
   /// deduction.
@@ -9454,9 +9508,9 @@ public:
   SubstTemplateName(NestedNameSpecifierLoc QualifierLoc, TemplateName Name,
                     SourceLocation Loc,
                     const MultiLevelTemplateArgumentList &TemplateArgs);
-  bool Subst(const TemplateArgumentLoc *Args, unsigned NumArgs,
-             TemplateArgumentListInfo &Result,
-             const MultiLevelTemplateArgumentList &TemplateArgs);
+
+  bool SubstTypeConstraint(TemplateTypeParmDecl *Inst, const TypeConstraint *TC,
+                           const MultiLevelTemplateArgumentList &TemplateArgs);
 
   bool InstantiateDefaultArgument(SourceLocation CallLoc, FunctionDecl *FD,
                                   ParmVarDecl *Param);
@@ -10433,6 +10487,12 @@ public:
   /// \param Init First part of the for loop.
   void ActOnOpenMPLoopInitialization(SourceLocation ForLoc, Stmt *Init);
 
+  /// Called on well-formed '\#pragma omp metadirective' after parsing
+  /// of the  associated statement.
+  StmtResult ActOnOpenMPMetaDirective(ArrayRef<OMPClause *> Clauses,
+                                      Stmt *AStmt, SourceLocation StartLoc,
+                                      SourceLocation EndLoc);
+
   // OpenMP directives and clauses.
   /// Called on correct id-expression from the '#pragma omp
   /// threadprivate'.
@@ -10455,7 +10515,7 @@ public:
   /// Called on well-formed '#pragma omp [begin] assume[s]'.
   void ActOnOpenMPAssumesDirective(SourceLocation Loc,
                                    OpenMPDirectiveKind DKind,
-                                   ArrayRef<StringRef> Assumptions,
+                                   ArrayRef<std::string> Assumptions,
                                    bool SkippedClauses);
 
   /// Check if there is an active global `omp begin assumes` directive.
@@ -10564,6 +10624,11 @@ public:
   /// Called for syntactical loops (ForStmt or CXXForRangeStmt) associated to
   /// an OpenMP loop directive.
   StmtResult ActOnOpenMPCanonicalLoop(Stmt *AStmt);
+
+  /// Process a canonical OpenMP loop nest that can either be a canonical
+  /// literal loop (ForStmt or CXXForRangeStmt), or the generated loop of an
+  /// OpenMP loop transformation construct.
+  StmtResult ActOnOpenMPLoopnest(Stmt *AStmt);
 
   /// End of OpenMP region.
   ///
@@ -10875,6 +10940,12 @@ public:
                                         Stmt *AStmt, SourceLocation StartLoc,
                                         SourceLocation EndLoc);
 
+  /// Called on well-formed '\#pragma omp loop' after parsing of the
+  /// associated statement.
+  StmtResult ActOnOpenMPGenericLoopDirective(
+      ArrayRef<OMPClause *> Clauses, Stmt *AStmt, SourceLocation StartLoc,
+      SourceLocation EndLoc, VarsWithInheritedDSAType &VarsWithImplicitDSA);
+
   /// Checks correctness of linear modifiers.
   bool CheckOpenMPLinearModifier(OpenMPLinearClauseKind LinKind,
                                  SourceLocation LinLoc);
@@ -10899,11 +10970,14 @@ public:
   /// \param VariantRef Expression that references the variant function, which
   /// must be used instead of the original one, specified in \p DG.
   /// \param TI The trait info object representing the match clause.
+  /// \param NumAppendArgs The number of omp_interop_t arguments to account for
+  /// in checking.
   /// \returns None, if the function/variant function are not compatible with
   /// the pragma, pair of original function/variant ref expression otherwise.
   Optional<std::pair<FunctionDecl *, Expr *>>
   checkOpenMPDeclareVariantFunction(DeclGroupPtrTy DG, Expr *VariantRef,
-                                    OMPTraitInfo &TI, SourceRange SR);
+                                    OMPTraitInfo &TI, unsigned NumAppendArgs,
+                                    SourceRange SR);
 
   /// Called on well-formed '\#pragma omp declare variant' after parsing of
   /// the associated method/function.
@@ -10912,8 +10986,19 @@ public:
   /// \param VariantRef Expression that references the variant function, which
   /// must be used instead of the original one, specified in \p DG.
   /// \param TI The context traits associated with the function variant.
-  void ActOnOpenMPDeclareVariantDirective(FunctionDecl *FD, Expr *VariantRef,
-                                          OMPTraitInfo &TI, SourceRange SR);
+  /// \param AdjustArgsNothing The list of 'nothing' arguments.
+  /// \param AdjustArgsNeedDevicePtr The list of 'need_device_ptr' arguments.
+  /// \param AppendArgs The list of 'append_args' arguments.
+  /// \param AdjustArgsLoc The Location of an 'adjust_args' clause.
+  /// \param AppendArgsLoc The Location of an 'append_args' clause.
+  /// \param SR The SourceRange of the 'declare variant' directive.
+  void ActOnOpenMPDeclareVariantDirective(
+      FunctionDecl *FD, Expr *VariantRef, OMPTraitInfo &TI,
+      ArrayRef<Expr *> AdjustArgsNothing,
+      ArrayRef<Expr *> AdjustArgsNeedDevicePtr,
+      ArrayRef<OMPDeclareVariantAttr::InteropType> AppendArgs,
+      SourceLocation AdjustArgsLoc, SourceLocation AppendArgsLoc,
+      SourceRange SR);
 
   OMPClause *ActOnOpenMPSingleExprClause(OpenMPClauseKind Kind,
                                          Expr *Expr,
@@ -10995,6 +11080,10 @@ public:
                                      SourceLocation StartLoc,
                                      SourceLocation LParenLoc,
                                      SourceLocation EndLoc);
+  /// Called on well-formed 'when' clause.
+  OMPClause *ActOnOpenMPWhenClause(OMPTraitInfo &TI, SourceLocation StartLoc,
+                                   SourceLocation LParenLoc,
+                                   SourceLocation EndLoc);
   /// Called on well-formed 'default' clause.
   OMPClause *ActOnOpenMPDefaultClause(llvm::omp::DefaultKind Kind,
                                       SourceLocation KindLoc,
@@ -11245,15 +11334,14 @@ public:
                                      SourceLocation ModifierLoc,
                                      SourceLocation EndLoc);
   /// Called on well-formed 'map' clause.
-  OMPClause *
-  ActOnOpenMPMapClause(ArrayRef<OpenMPMapModifierKind> MapTypeModifiers,
-                       ArrayRef<SourceLocation> MapTypeModifiersLoc,
-                       CXXScopeSpec &MapperIdScopeSpec,
-                       DeclarationNameInfo &MapperId,
-                       OpenMPMapClauseKind MapType, bool IsMapTypeImplicit,
-                       SourceLocation MapLoc, SourceLocation ColonLoc,
-                       ArrayRef<Expr *> VarList, const OMPVarListLocTy &Locs,
-                       ArrayRef<Expr *> UnresolvedMappers = llvm::None);
+  OMPClause *ActOnOpenMPMapClause(
+      ArrayRef<OpenMPMapModifierKind> MapTypeModifiers,
+      ArrayRef<SourceLocation> MapTypeModifiersLoc,
+      CXXScopeSpec &MapperIdScopeSpec, DeclarationNameInfo &MapperId,
+      OpenMPMapClauseKind MapType, bool IsMapTypeImplicit,
+      SourceLocation MapLoc, SourceLocation ColonLoc, ArrayRef<Expr *> VarList,
+      const OMPVarListLocTy &Locs, bool NoDiagnose = false,
+      ArrayRef<Expr *> UnresolvedMappers = llvm::None);
   /// Called on well-formed 'num_teams' clause.
   OMPClause *ActOnOpenMPNumTeamsClause(Expr *NumTeams, SourceLocation StartLoc,
                                        SourceLocation LParenLoc,
@@ -12149,9 +12237,9 @@ public:
     return targetDiag(Loc, PD.getDiagID(), FD) << PD;
   }
 
-  /// Check if the expression is allowed to be used in expressions for the
-  /// offloading devices.
-  void checkDeviceDecl(ValueDecl *D, SourceLocation Loc);
+  /// Check if the type is allowed to be used for the current target.
+  void checkTypeSupport(QualType Ty, SourceLocation Loc,
+                        ValueDecl *D = nullptr);
 
   enum CUDAFunctionTarget {
     CFT_Device,
@@ -12377,6 +12465,15 @@ public:
                                       const VirtSpecifiers *VS = nullptr);
   void CodeCompleteBracketDeclarator(Scope *S);
   void CodeCompleteCase(Scope *S);
+  enum class AttributeCompletion {
+    Attribute,
+    Scope,
+    None,
+  };
+  void CodeCompleteAttribute(
+      AttributeCommonInfo::Syntax Syntax,
+      AttributeCompletion Completion = AttributeCompletion::Attribute,
+      const IdentifierInfo *Scope = nullptr);
   /// Determines the preferred type of the current function argument, by
   /// examining the signatures of all possible overloads.
   /// Returns null if unknown or ambiguous, or if code completion is off.
@@ -12628,9 +12725,13 @@ private:
                                 int ArgNum, unsigned ExpectedFieldNum,
                                 bool AllowName);
   bool SemaBuiltinARMMemoryTaggingCall(unsigned BuiltinID, CallExpr *TheCall);
-  bool SemaBuiltinPPCMMACall(CallExpr *TheCall, const char *TypeDesc);
+  bool SemaBuiltinPPCMMACall(CallExpr *TheCall, unsigned BuiltinID,
+                             const char *TypeDesc);
 
   bool CheckPPCMMAType(QualType Type, SourceLocation TypeLoc);
+
+  bool SemaBuiltinElementwiseMath(CallExpr *TheCall);
+  bool SemaBuiltinElementwiseMathOneArg(CallExpr *TheCall);
 
   // Matrix builtin handling.
   ExprResult SemaBuiltinMatrixTranspose(CallExpr *TheCall,

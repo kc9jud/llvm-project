@@ -90,9 +90,9 @@
 // CHECK-PCH-NEXT:       "command-line": [
 // CHECK-PCH-NEXT:         "-fno-implicit-modules",
 // CHECK-PCH-NEXT:         "-fno-implicit-module-maps",
-// CHECK-PCH-DAG:          "-fmodule-file=[[PREFIX]]/build/[[HASH_MOD_COMMON_1]]/ModCommon1-{{.*}}.pcm",
-// CHECK-PCH-DAG:          "-fmodule-file=[[PREFIX]]/build/[[HASH_MOD_COMMON_2]]/ModCommon2-{{.*}}.pcm",
-// CHECK-PCH-DAG:          "-fmodule-file=[[PREFIX]]/build/[[HASH_MOD_PCH]]/ModPCH-{{.*}}.pcm",
+// CHECK-PCH-NEXT:         "-fmodule-file=[[PREFIX]]/build/[[HASH_MOD_COMMON_1]]/ModCommon1-{{.*}}.pcm",
+// CHECK-PCH-NEXT:         "-fmodule-file=[[PREFIX]]/build/[[HASH_MOD_COMMON_2]]/ModCommon2-{{.*}}.pcm",
+// CHECK-PCH-NEXT:         "-fmodule-file=[[PREFIX]]/build/[[HASH_MOD_PCH]]/ModPCH-{{.*}}.pcm",
 // CHECK-PCH-NEXT:         "-fmodule-map-file=[[PREFIX]]/module.modulemap",
 // CHECK-PCH-NEXT:         "-fmodule-map-file=[[PREFIX]]/module.modulemap",
 // CHECK-PCH-NEXT:         "-fmodule-map-file=[[PREFIX]]/module.modulemap"
@@ -229,8 +229,7 @@
 // CHECK-TU-WITH-COMMON-NEXT:       "command-line": [
 // CHECK-TU-WITH-COMMON-NEXT:         "-fno-implicit-modules",
 // CHECK-TU-WITH-COMMON-NEXT:         "-fno-implicit-module-maps",
-// FIXME: Figure out why we need `=ModCommon2` here for Clang to pick up the PCM.
-// CHECK-TU-WITH-COMMON-NEXT:         "-fmodule-file=ModCommon2=[[PREFIX]]/build/{{.*}}/ModCommon2-{{.*}}.pcm",
+// CHECK-TU-WITH-COMMON-NEXT:         "-fmodule-file=[[PREFIX]]/build/{{.*}}/ModCommon2-{{.*}}.pcm",
 // CHECK-TU-WITH-COMMON-NEXT:         "-fmodule-map-file=[[PREFIX]]/module.modulemap"
 // CHECK-TU-WITH-COMMON-NEXT:         "-fmodule-file=[[PREFIX]]/build/[[HASH_MOD_TU_WITH_COMMON]]/ModTUWithCommon-{{.*}}.pcm",
 // CHECK-TU-WITH-COMMON-NEXT:         "-fmodule-map-file=[[PREFIX]]/module.modulemap"

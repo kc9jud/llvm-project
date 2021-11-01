@@ -21,7 +21,6 @@
 #include "lldb/Core/Section.h"
 #include "lldb/Core/StreamFile.h"
 #include "lldb/Host/Host.h"
-#include "lldb/Host/SafeMachO.h"
 #include "lldb/Symbol/DWARFCallFrameInfo.h"
 #include "lldb/Symbol/LocateSymbolFile.h"
 #include "lldb/Symbol/ObjectFile.h"
@@ -44,6 +43,8 @@
 #include "lldb/Utility/Timer.h"
 #include "lldb/Utility/UUID.h"
 
+#include "lldb/Host/SafeMachO.h"
+
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/MemoryBuffer.h"
@@ -65,48 +66,65 @@
 #include <bitset>
 #include <memory>
 
-#if LLVM_SUPPORT_XCODE_SIGNPOSTS
 // Unfortunately the signpost header pulls in the system MachO header, too.
+#ifdef CPU_TYPE_ARM
 #undef CPU_TYPE_ARM
+#endif
+#ifdef CPU_TYPE_ARM64
 #undef CPU_TYPE_ARM64
+#endif
+#ifdef CPU_TYPE_ARM64_32
 #undef CPU_TYPE_ARM64_32
+#endif
+#ifdef CPU_TYPE_I386
 #undef CPU_TYPE_I386
+#endif
+#ifdef CPU_TYPE_X86_64
 #undef CPU_TYPE_X86_64
-#undef MH_BINDATLOAD
-#undef MH_BUNDLE
-#undef MH_CIGAM
-#undef MH_CIGAM_64
-#undef MH_CORE
-#undef MH_DSYM
-#undef MH_DYLDLINK
-#undef MH_DYLIB
-#undef MH_DYLIB_STUB
+#endif
+#ifdef MH_DYLINKER
 #undef MH_DYLINKER
-#undef MH_DYLINKER
-#undef MH_EXECUTE
-#undef MH_FVMLIB
-#undef MH_INCRLINK
-#undef MH_KEXT_BUNDLE
-#undef MH_MAGIC
-#undef MH_MAGIC_64
-#undef MH_NOUNDEFS
+#endif
+#ifdef MH_OBJECT
 #undef MH_OBJECT
-#undef MH_OBJECT
-#undef MH_PRELOAD
-
-#undef LC_BUILD_VERSION
+#endif
+#ifdef LC_VERSION_MIN_MACOSX
 #undef LC_VERSION_MIN_MACOSX
+#endif
+#ifdef LC_VERSION_MIN_IPHONEOS
 #undef LC_VERSION_MIN_IPHONEOS
+#endif
+#ifdef LC_VERSION_MIN_TVOS
 #undef LC_VERSION_MIN_TVOS
+#endif
+#ifdef LC_VERSION_MIN_WATCHOS
 #undef LC_VERSION_MIN_WATCHOS
-
+#endif
+#ifdef LC_BUILD_VERSION
+#undef LC_BUILD_VERSION
+#endif
+#ifdef PLATFORM_MACOS
 #undef PLATFORM_MACOS
+#endif
+#ifdef PLATFORM_MACCATALYST
 #undef PLATFORM_MACCATALYST
+#endif
+#ifdef PLATFORM_IOS
 #undef PLATFORM_IOS
+#endif
+#ifdef PLATFORM_IOSSIMULATOR
 #undef PLATFORM_IOSSIMULATOR
+#endif
+#ifdef PLATFORM_TVOS
 #undef PLATFORM_TVOS
+#endif
+#ifdef PLATFORM_TVOSSIMULATOR
 #undef PLATFORM_TVOSSIMULATOR
+#endif
+#ifdef PLATFORM_WATCHOS
 #undef PLATFORM_WATCHOS
+#endif
+#ifdef PLATFORM_WATCHOSSIMULATOR
 #undef PLATFORM_WATCHOSSIMULATOR
 #endif
 
@@ -745,13 +763,14 @@ public:
       PrintRegisterValue(reg_ctx, "sp", nullptr, 8, data);
       PrintRegisterValue(reg_ctx, "pc", nullptr, 8, data);
       PrintRegisterValue(reg_ctx, "cpsr", nullptr, 4, data);
+      data.PutHex32(0); // uint32_t pad at the end
 
       // Write out the EXC registers
-      //            data.PutHex32 (EXCRegSet);
-      //            data.PutHex32 (EXCWordCount);
-      //            WriteRegister (reg_ctx, "far", NULL, 8, data);
-      //            WriteRegister (reg_ctx, "esr", NULL, 4, data);
-      //            WriteRegister (reg_ctx, "exception", NULL, 4, data);
+      data.PutHex32(EXCRegSet);
+      data.PutHex32(EXCWordCount);
+      PrintRegisterValue(reg_ctx, "far", NULL, 8, data);
+      PrintRegisterValue(reg_ctx, "esr", NULL, 4, data);
+      PrintRegisterValue(reg_ctx, "exception", NULL, 4, data);
       return true;
     }
     return false;
@@ -812,15 +831,6 @@ void ObjectFileMachO::Initialize() {
 
 void ObjectFileMachO::Terminate() {
   PluginManager::UnregisterPlugin(CreateInstance);
-}
-
-lldb_private::ConstString ObjectFileMachO::GetPluginNameStatic() {
-  static ConstString g_name("mach-o");
-  return g_name;
-}
-
-const char *ObjectFileMachO::GetPluginDescriptionStatic() {
-  return "Mach-o object file reader (32 and 64 bit)";
 }
 
 ObjectFile *ObjectFileMachO::CreateInstance(const lldb::ModuleSP &module_sp,
@@ -1127,6 +1137,10 @@ bool ObjectFileMachO::IsDynamicLoader() const {
   return m_header.filetype == MH_DYLINKER;
 }
 
+bool ObjectFileMachO::IsSharedCacheBinary() const {
+  return m_header.flags & MH_DYLIB_IN_CACHE;
+}
+
 uint32_t ObjectFileMachO::GetAddressByteSize() const {
   return m_data.GetAddressByteSize();
 }
@@ -1302,6 +1316,7 @@ Symtab *ObjectFileMachO::GetSymtab() {
   if (module_sp) {
     std::lock_guard<std::recursive_mutex> guard(module_sp->GetMutex());
     if (m_symtab_up == nullptr) {
+      ElapsedTime elapsed(module_sp->GetSymtabParseTime());
       m_symtab_up = std::make_unique<Symtab>(this);
       std::lock_guard<std::recursive_mutex> symtab_guard(
           m_symtab_up->GetMutex());
@@ -1377,7 +1392,7 @@ void ObjectFileMachO::SanitizeSegmentCommand(
   if (m_length == 0 || seg_cmd.filesize == 0)
     return;
 
-  if ((m_header.flags & MH_DYLIB_IN_CACHE) && !IsInMemory()) {
+  if (IsSharedCacheBinary() && !IsInMemory()) {
     // In shared cache images, the load commands are relative to the
     // shared cache file, and not the specific image we are
     // examining. Let's fix this up so that it looks like a normal
@@ -1675,29 +1690,38 @@ void ObjectFileMachO::ProcessSegmentCommand(
     if (add_to_unified)
       context.UnifiedList.AddSection(segment_sp);
   } else if (unified_section_sp) {
+    // If this is a dSYM and the file addresses in the dSYM differ from the
+    // file addresses in the ObjectFile, we must use the file base address for
+    // the Section from the dSYM for the DWARF to resolve correctly.
+    // This only happens with binaries in the shared cache in practice;
+    // normally a mismatch like this would give a binary & dSYM that do not
+    // match UUIDs. When a binary is included in the shared cache, its
+    // segments are rearranged to optimize the shared cache, so its file
+    // addresses will differ from what the ObjectFile had originally,
+    // and what the dSYM has.
     if (is_dsym && unified_section_sp->GetFileAddress() != load_cmd.vmaddr) {
-      // Check to see if the module was read from memory?
-      if (module_sp->GetObjectFile()->IsInMemory()) {
-        // We have a module that is in memory and needs to have its file
-        // address adjusted. We need to do this because when we load a file
-        // from memory, its addresses will be slid already, yet the addresses
-        // in the new symbol file will still be unslid.  Since everything is
-        // stored as section offset, this shouldn't cause any problems.
-
-        // Make sure we've parsed the symbol table from the ObjectFile before
-        // we go around changing its Sections.
-        module_sp->GetObjectFile()->GetSymtab();
-        // eh_frame would present the same problems but we parse that on a per-
-        // function basis as-needed so it's more difficult to remove its use of
-        // the Sections.  Realistically, the environments where this code path
-        // will be taken will not have eh_frame sections.
-
-        unified_section_sp->SetFileAddress(load_cmd.vmaddr);
-
-        // Notify the module that the section addresses have been changed once
-        // we're done so any file-address caches can be updated.
-        context.FileAddressesChanged = true;
+      Log *log(lldb_private::GetLogIfAllCategoriesSet(LIBLLDB_LOG_SYMBOLS));
+      if (log) {
+        log->Printf(
+            "Installing dSYM's %s segment file address over ObjectFile's "
+            "so symbol table/debug info resolves correctly for %s",
+            const_segname.AsCString(),
+            module_sp->GetFileSpec().GetFilename().AsCString());
       }
+
+      // Make sure we've parsed the symbol table from the ObjectFile before
+      // we go around changing its Sections.
+      module_sp->GetObjectFile()->GetSymtab();
+      // eh_frame would present the same problems but we parse that on a per-
+      // function basis as-needed so it's more difficult to remove its use of
+      // the Sections.  Realistically, the environments where this code path
+      // will be taken will not have eh_frame sections.
+
+      unified_section_sp->SetFileAddress(load_cmd.vmaddr);
+
+      // Notify the module that the section addresses have been changed once
+      // we're done so any file-address caches can be updated.
+      context.FileAddressesChanged = true;
     }
     m_sections_up->AddSection(unified_section_sp);
   }
@@ -1726,7 +1750,7 @@ void ObjectFileMachO::ProcessSegmentCommand(
     if (m_data.GetU32(&offset, &sect64.offset, num_u32s) == nullptr)
       break;
 
-    if ((m_header.flags & MH_DYLIB_IN_CACHE) && !IsInMemory()) {
+    if (IsSharedCacheBinary() && !IsInMemory()) {
       sect64.offset = sect64.addr - m_text_address;
     }
 
@@ -2352,7 +2376,7 @@ size_t ObjectFileMachO::ParseSymtab() {
   Process *process = process_sp.get();
 
   uint32_t memory_module_load_level = eMemoryModuleLoadLevelComplete;
-  bool is_shared_cache_image = m_header.flags & MH_DYLIB_IN_CACHE;
+  bool is_shared_cache_image = IsSharedCacheBinary();
   bool is_local_shared_cache_image = is_shared_cache_image && !IsInMemory();
   SectionSP linkedit_section_sp(
       section_list->FindSectionByName(GetSegmentNameLINKEDIT()));
@@ -2668,7 +2692,7 @@ size_t ObjectFileMachO::ParseSymtab() {
   // to parse any DSC unmapped symbol information. If we find any, we set a
   // flag that tells the normal nlist parser to ignore all LOCAL symbols.
 
-  if (m_header.flags & MH_DYLIB_IN_CACHE) {
+  if (IsSharedCacheBinary()) {
     // Before we can start mapping the DSC, we need to make certain the
     // target process is actually using the cache we can find.
 
@@ -4983,10 +5007,14 @@ struct OSEnv {
     case llvm::MachO::PLATFORM_WATCHOS:
       os_type = llvm::Triple::getOSTypeName(llvm::Triple::WatchOS);
       return;
-      // NEED_BRIDGEOS_TRIPLE      case llvm::MachO::PLATFORM_BRIDGEOS:
-      // NEED_BRIDGEOS_TRIPLE        os_type =
-      // llvm::Triple::getOSTypeName(llvm::Triple::BridgeOS);
-      // NEED_BRIDGEOS_TRIPLE        return;
+    // TODO: add BridgeOS & DriverKit once in llvm/lib/Support/Triple.cpp
+    // NEED_BRIDGEOS_TRIPLE
+    // case llvm::MachO::PLATFORM_BRIDGEOS:
+    //   os_type = llvm::Triple::getOSTypeName(llvm::Triple::BridgeOS);
+    //   return;
+    // case llvm::MachO::PLATFORM_DRIVERKIT:
+    //   os_type = llvm::Triple::getOSTypeName(llvm::Triple::DriverKit);
+    //   return;
     case llvm::MachO::PLATFORM_MACCATALYST:
       os_type = llvm::Triple::getOSTypeName(llvm::Triple::IOS);
       environment = llvm::Triple::getEnvironmentTypeName(llvm::Triple::MacABI);
@@ -6155,13 +6183,6 @@ bool ObjectFileMachO::AllowAssemblyEmulationUnwindPlans() {
   return m_allow_assembly_emulation_unwind_plans;
 }
 
-// PluginInterface protocol
-lldb_private::ConstString ObjectFileMachO::GetPluginName() {
-  return GetPluginNameStatic();
-}
-
-uint32_t ObjectFileMachO::GetPluginVersion() { return 1; }
-
 Section *ObjectFileMachO::GetMachHeaderSection() {
   // Find the first address of the mach header which is the first non-zero file
   // sized section whose file offset is zero. This is the base file address of
@@ -7022,12 +7043,8 @@ bool ObjectFileMachO::LoadCoreFileImages(lldb_private::Process &process) {
                                                    image.load_address);
         }
       }
-      if (module_sp.get() && module_sp->GetObjectFile()) {
+      if (module_sp.get()) {
         added_images = true;
-        if (module_sp->GetObjectFile()->GetType() ==
-            ObjectFile::eTypeExecutable) {
-          process.GetTarget().SetExecutableModule(module_sp, eLoadDependentsNo);
-        }
         for (auto name_vmaddr_tuple : image.segment_load_addresses) {
           SectionList *sectlist = module_sp->GetObjectFile()->GetSectionList();
           if (sectlist) {

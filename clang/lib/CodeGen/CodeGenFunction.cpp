@@ -45,6 +45,7 @@
 #include "llvm/Support/CRC.h"
 #include "llvm/Transforms/Scalar/LowerExpectIntrinsic.h"
 #include "llvm/Transforms/Utils/PromoteMemToReg.h"
+
 using namespace clang;
 using namespace CodeGen;
 
@@ -381,6 +382,9 @@ void CodeGenFunction::FinishFunction(SourceLocation EndLoc) {
                        "__cyg_profile_func_exit");
   }
 
+  if (ShouldSkipSanitizerInstrumentation())
+    CurFn->addFnAttr(llvm::Attribute::DisableSanitizerInstrumentation);
+
   // Emit debug descriptor for function end.
   if (CGDebugInfo *DI = getDebugInfo())
     DI->EmitFunctionEnd(Builder, CurFn);
@@ -484,11 +488,13 @@ void CodeGenFunction::FinishFunction(SourceLocation EndLoc) {
   //    function.
   CurFn->addFnAttr("min-legal-vector-width", llvm::utostr(LargestVectorWidth));
 
-  // Add vscale attribute if appropriate.
-  if (getLangOpts().ArmSveVectorBits) {
-    unsigned VScale = getLangOpts().ArmSveVectorBits / 128;
-    CurFn->addFnAttr(llvm::Attribute::getWithVScaleRangeArgs(getLLVMContext(),
-                                                             VScale, VScale));
+  // Add vscale_range attribute if appropriate.
+  Optional<std::pair<unsigned, unsigned>> VScaleRange =
+      getContext().getTargetInfo().getVScaleRange(getLangOpts());
+  if (VScaleRange) {
+    CurFn->addFnAttr(llvm::Attribute::getWithVScaleRangeArgs(
+        getLLVMContext(), VScaleRange.getValue().first,
+        VScaleRange.getValue().second));
   }
 
   // If we generated an unreachable return block, delete it now.
@@ -515,6 +521,12 @@ bool CodeGenFunction::ShouldInstrumentFunction() {
   if (!CurFuncDecl || CurFuncDecl->hasAttr<NoInstrumentFunctionAttr>())
     return false;
   return true;
+}
+
+bool CodeGenFunction::ShouldSkipSanitizerInstrumentation() {
+  if (!CurFuncDecl)
+    return false;
+  return CurFuncDecl->hasAttr<DisableSanitizerInstrumentationAttr>();
 }
 
 /// ShouldXRayInstrument - Return true if the current function should be
@@ -969,7 +981,8 @@ void CodeGenFunction::StartFunction(GlobalDecl GD, QualType RetTy,
   // precise source location of the checked return statement.
   if (requiresReturnValueCheck()) {
     ReturnLocation = CreateDefaultAlignTempAlloca(Int8PtrTy, "return.sloc.ptr");
-    InitTempAlloca(ReturnLocation, llvm::ConstantPointerNull::get(Int8PtrTy));
+    Builder.CreateStore(llvm::ConstantPointerNull::get(Int8PtrTy),
+                        ReturnLocation);
   }
 
   // Emit subprogram debug descriptor.
@@ -977,16 +990,9 @@ void CodeGenFunction::StartFunction(GlobalDecl GD, QualType RetTy,
     // Reconstruct the type from the argument list so that implicit parameters,
     // such as 'this' and 'vtt', show up in the debug info. Preserve the calling
     // convention.
-    CallingConv CC = CallingConv::CC_C;
-    if (FD)
-      if (const auto *SrcFnTy = FD->getType()->getAs<FunctionType>())
-        CC = SrcFnTy->getCallConv();
-    SmallVector<QualType, 16> ArgTypes;
-    for (const VarDecl *VD : Args)
-      ArgTypes.push_back(VD->getType());
-    QualType FnType = getContext().getFunctionType(
-        RetTy, ArgTypes, FunctionProtoType::ExtProtoInfo(CC));
-    DI->emitFunctionStart(GD, Loc, StartLoc, FnType, CurFn, CurFuncIsThunk);
+    DI->emitFunctionStart(GD, Loc, StartLoc,
+                          DI->getFunctionType(FD, RetTy, Args), CurFn,
+                          CurFuncIsThunk);
   }
 
   if (ShouldInstrumentFunction()) {
@@ -1038,7 +1044,8 @@ void CodeGenFunction::StartFunction(GlobalDecl GD, QualType RetTy,
     Fn->addFnAttr("packed-stack");
   }
 
-  if (CGM.getCodeGenOpts().WarnStackSize != UINT_MAX)
+  if (CGM.getCodeGenOpts().WarnStackSize != UINT_MAX &&
+      !CGM.getDiags().isIgnored(diag::warn_fe_backend_frame_larger_than, Loc))
     Fn->addFnAttr("warn-stack-size",
                   std::to_string(CGM.getCodeGenOpts().WarnStackSize));
 
@@ -1288,6 +1295,23 @@ void CodeGenFunction::GenerateCode(GlobalDecl GD, llvm::Function *Fn,
 
   FunctionArgList Args;
   QualType ResTy = BuildFunctionArgList(GD, Args);
+
+  // When generating code for a builtin with an inline declaration, use a
+  // mangled name to hold the actual body, while keeping an external definition
+  // in case the function pointer is referenced somewhere.
+  if (FD->isInlineBuiltinDeclaration() && Fn) {
+    std::string FDInlineName = (Fn->getName() + ".inline").str();
+    llvm::Module *M = Fn->getParent();
+    llvm::Function *Clone = M->getFunction(FDInlineName);
+    if (!Clone) {
+      Clone = llvm::Function::Create(Fn->getFunctionType(),
+                                     llvm::GlobalValue::InternalLinkage,
+                                     Fn->getAddressSpace(), FDInlineName, M);
+      Clone->addFnAttr(llvm::Attribute::AlwaysInline);
+    }
+    Fn->setLinkage(llvm::GlobalValue::ExternalLinkage);
+    Fn = Clone;
+  }
 
   // Check if we should generate debug info for this function.
   if (FD->hasAttr<NoDebugAttr>()) {
@@ -2393,15 +2417,19 @@ Address CodeGenFunction::EmitFieldAnnotations(const FieldDecl *D,
   assert(D->hasAttr<AnnotateAttr>() && "no annotate attribute");
   llvm::Value *V = Addr.getPointer();
   llvm::Type *VTy = V->getType();
-  llvm::Function *F = CGM.getIntrinsic(llvm::Intrinsic::ptr_annotation,
-                                    CGM.Int8PtrTy);
+  auto *PTy = dyn_cast<llvm::PointerType>(VTy);
+  unsigned AS = PTy ? PTy->getAddressSpace() : 0;
+  llvm::PointerType *IntrinTy =
+      llvm::PointerType::getWithSamePointeeType(CGM.Int8PtrTy, AS);
+  llvm::Function *F =
+      CGM.getIntrinsic(llvm::Intrinsic::ptr_annotation, IntrinTy);
 
   for (const auto *I : D->specific_attrs<AnnotateAttr>()) {
     // FIXME Always emit the cast inst so we can differentiate between
     // annotation on the first field of a struct and annotation on the struct
     // itself.
-    if (VTy != CGM.Int8PtrTy)
-      V = Builder.CreateBitCast(V, CGM.Int8PtrTy);
+    if (VTy != IntrinTy)
+      V = Builder.CreateBitCast(V, IntrinTy);
     V = EmitAnnotationCall(F, V, I->getAnnotation(), D->getLocation(), I);
     V = Builder.CreateBitCast(V, VTy);
   }
@@ -2472,8 +2500,7 @@ void CodeGenFunction::checkTargetFeatures(SourceLocation Loc,
     // Return if the builtin doesn't have any required features.
     if (FeatureList.empty())
       return;
-    assert(FeatureList.find(' ') == StringRef::npos &&
-           "Space in feature list");
+    assert(!FeatureList.contains(' ') && "Space in feature list");
     TargetFeatures TF(CallerFeatureMap);
     if (!TF.hasRequiredFeatures(FeatureList))
       CGM.getDiags().Report(Loc, diag::err_builtin_needs_feature)

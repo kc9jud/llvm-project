@@ -306,6 +306,9 @@ class RegisterClass<string namespace, list<ValueType> regTypes, int alignment,
   // the assembly matcher will provide a function to map from diagnostic types
   // to message strings.
   string DiagnosticString = "";
+
+  // Target-specific flags. This becomes the TSFlags field in TargetRegisterClass.
+  bits<8> TSFlags = 0;
 }
 
 // The memberList in a RegisterClass is a dag of set operations. TableGen
@@ -650,6 +653,11 @@ class Instruction : InstructionEncoding {
   /// instruction selection predicates. FastISel cannot handle such cases, but
   /// SelectionDAG can.
   bit FastISelShouldIgnore = false;
+
+  /// HasPositionOrder: Indicate tablegen to sort the instructions by record
+  /// ID, so that instruction that is defined earlier can be sorted earlier
+  /// in the assembly matching table.
+  bit HasPositionOrder = false;
 }
 
 /// Defines an additional encoding that disassembles to the given instruction

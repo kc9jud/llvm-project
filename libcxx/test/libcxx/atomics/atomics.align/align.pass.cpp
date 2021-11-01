@@ -20,6 +20,12 @@
 // std::atomic when used with __attribute__((vector(X))).
 // XFAIL: gcc
 
+// This fails on PowerPC, as the LLIArr2 and Padding structs do not have
+// adequate alignment, despite these types returning true for the query of
+// being lock-free. This is an issue that occurs when linking in the
+// PowerPC GNU libatomic library into the test.
+// XFAIL: target=powerpc{{.*}}le-unknown-linux-gnu
+
 // <atomic>
 
 // Verify that the content of atomic<T> is properly aligned if the type is
@@ -59,7 +65,9 @@ int main(int, char**) {
   CHECK_ALIGNMENT(unsigned char);
   CHECK_ALIGNMENT(char16_t);
   CHECK_ALIGNMENT(char32_t);
+#ifndef TEST_HAS_NO_WIDE_CHARACTERS
   CHECK_ALIGNMENT(wchar_t);
+#endif
   CHECK_ALIGNMENT(short);
   CHECK_ALIGNMENT(unsigned short);
   CHECK_ALIGNMENT(int);

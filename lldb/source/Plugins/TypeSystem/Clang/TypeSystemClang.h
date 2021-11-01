@@ -138,9 +138,9 @@ public:
   void Finalize() override;
 
   // PluginInterface functions
-  ConstString GetPluginName() override;
-
-  uint32_t GetPluginVersion() override;
+  llvm::StringRef GetPluginName() override {
+    return GetPluginNameStatic().GetStringRef();
+  }
 
   static ConstString GetPluginNameStatic();
 
@@ -400,14 +400,7 @@ public:
   CompilerType CreateFunctionType(const CompilerType &result_type,
                                   const CompilerType *args, unsigned num_args,
                                   bool is_variadic, unsigned type_quals,
-                                  clang::CallingConv cc);
-
-  CompilerType CreateFunctionType(const CompilerType &result_type,
-                                  const CompilerType *args, unsigned num_args,
-                                  bool is_variadic, unsigned type_quals) {
-    return CreateFunctionType(result_type, args, num_args, is_variadic,
-                              type_quals, clang::CC_C);
-  }
+                                  clang::CallingConv cc = clang::CC_C);
 
   clang::ParmVarDecl *
   CreateParameterDeclaration(clang::DeclContext *decl_ctx,
@@ -945,7 +938,8 @@ public:
   LLVM_DUMP_METHOD void dump(lldb::opaque_compiler_type_t type) const override;
 #endif
 
-  void Dump(Stream &s);
+  /// \see lldb_private::TypeSystem::Dump
+  void Dump(llvm::raw_ostream &output) override;
 
   /// Dump clang AST types from the symbol file.
   ///
@@ -1168,6 +1162,9 @@ public:
                                        const clang::LangOptions &lang_opts) {
     return GetForTarget(target, InferIsolatedASTKindFromLangOpts(lang_opts));
   }
+
+  /// \see lldb_private::TypeSystem::Dump
+  void Dump(llvm::raw_ostream &output) override;
 
   UserExpression *
   GetUserExpression(llvm::StringRef expr, llvm::StringRef prefix,

@@ -1514,6 +1514,12 @@ public:
 class VPWidenMemoryInstructionRecipe : public VPRecipeBase {
   Instruction &Ingredient;
 
+  // Whether the loaded-from / stored-to addresses are consecutive.
+  bool Consecutive;
+
+  // Whether the consecutive loaded/stored addresses are in reverse order.
+  bool Reverse;
+
   void setMask(VPValue *Mask) {
     if (!Mask)
       return;
@@ -1525,16 +1531,21 @@ class VPWidenMemoryInstructionRecipe : public VPRecipeBase {
   }
 
 public:
-  VPWidenMemoryInstructionRecipe(LoadInst &Load, VPValue *Addr, VPValue *Mask)
-      : VPRecipeBase(VPWidenMemoryInstructionSC, {Addr}), Ingredient(Load) {
+  VPWidenMemoryInstructionRecipe(LoadInst &Load, VPValue *Addr, VPValue *Mask,
+                                 bool Consecutive, bool Reverse)
+      : VPRecipeBase(VPWidenMemoryInstructionSC, {Addr}), Ingredient(Load),
+        Consecutive(Consecutive), Reverse(Reverse) {
+    assert((Consecutive || !Reverse) && "Reverse implies consecutive");
     new VPValue(VPValue::VPVMemoryInstructionSC, &Load, this);
     setMask(Mask);
   }
 
   VPWidenMemoryInstructionRecipe(StoreInst &Store, VPValue *Addr,
-                                 VPValue *StoredValue, VPValue *Mask)
+                                 VPValue *StoredValue, VPValue *Mask,
+                                 bool Consecutive, bool Reverse)
       : VPRecipeBase(VPWidenMemoryInstructionSC, {Addr, StoredValue}),
-        Ingredient(Store) {
+        Ingredient(Store), Consecutive(Consecutive), Reverse(Reverse) {
+    assert((Consecutive || !Reverse) && "Reverse implies consecutive");
     setMask(Mask);
   }
 
@@ -1563,6 +1574,13 @@ public:
     assert(isStore() && "Stored value only available for store instructions");
     return getOperand(1); // Stored value is the 2nd, mandatory operand.
   }
+
+  // Return whether the loaded-from / stored-to addresses are consecutive.
+  bool isConsecutive() const { return Consecutive; }
+
+  // Return whether the consecutive loaded/stored addresses are in reverse
+  // order.
+  bool isReverse() const { return Reverse; }
 
   /// Generate the wide load/store.
   void execute(VPTransformState &State) override;
@@ -2100,6 +2118,10 @@ class VPlan {
   /// Holds the VPLoopInfo analysis for this VPlan.
   VPLoopInfo VPLInfo;
 
+  /// Indicates whether it is safe use the Value2VPValue mapping or if the
+  /// mapping cannot be used any longer, because it is stale.
+  bool Value2VPValueEnabled = true;
+
 public:
   VPlan(VPBlockBase *Entry = nullptr) : Entry(Entry) {
     if (Entry)
@@ -2141,6 +2163,10 @@ public:
     return BackedgeTakenCount;
   }
 
+  /// Mark the plan to indicate that using Value2VPValue is not safe any
+  /// longer, because it may be stale.
+  void disableValue2VPValue() { Value2VPValueEnabled = false; }
+
   void addVF(ElementCount VF) { VFs.insert(VF); }
 
   bool hasVF(ElementCount VF) { return VFs.count(VF); }
@@ -2154,6 +2180,8 @@ public:
   void addExternalDef(VPValue *VPVal) { VPExternalDefs.insert(VPVal); }
 
   void addVPValue(Value *V) {
+    assert(Value2VPValueEnabled &&
+           "IR value to VPValue mapping may be out of date!");
     assert(V && "Trying to add a null Value to VPlan");
     assert(!Value2VPValue.count(V) && "Value already exists in VPlan");
     VPValue *VPV = new VPValue(V);
@@ -2162,25 +2190,39 @@ public:
   }
 
   void addVPValue(Value *V, VPValue *VPV) {
+    assert(Value2VPValueEnabled && "Value2VPValue mapping may be out of date!");
     assert(V && "Trying to add a null Value to VPlan");
     assert(!Value2VPValue.count(V) && "Value already exists in VPlan");
     Value2VPValue[V] = VPV;
   }
 
-  VPValue *getVPValue(Value *V) {
+  /// Returns the VPValue for \p V. \p OverrideAllowed can be used to disable
+  /// checking whether it is safe to query VPValues using IR Values.
+  VPValue *getVPValue(Value *V, bool OverrideAllowed = false) {
+    assert((OverrideAllowed || isa<Constant>(V) || Value2VPValueEnabled) &&
+           "Value2VPValue mapping may be out of date!");
     assert(V && "Trying to get the VPValue of a null Value");
     assert(Value2VPValue.count(V) && "Value does not exist in VPlan");
     return Value2VPValue[V];
   }
 
-  VPValue *getOrAddVPValue(Value *V) {
+  /// Gets the VPValue or adds a new one (if none exists yet) for \p V. \p
+  /// OverrideAllowed can be used to disable checking whether it is safe to
+  /// query VPValues using IR Values.
+  VPValue *getOrAddVPValue(Value *V, bool OverrideAllowed = false) {
+    assert((OverrideAllowed || isa<Constant>(V) || Value2VPValueEnabled) &&
+           "Value2VPValue mapping may be out of date!");
     assert(V && "Trying to get or add the VPValue of a null Value");
     if (!Value2VPValue.count(V))
       addVPValue(V);
     return getVPValue(V);
   }
 
-  void removeVPValueFor(Value *V) { Value2VPValue.erase(V); }
+  void removeVPValueFor(Value *V) {
+    assert(Value2VPValueEnabled &&
+           "IR value to VPValue mapping may be out of date!");
+    Value2VPValue.erase(V);
+  }
 
   /// Return the VPLoopInfo analysis for this VPlan.
   VPLoopInfo &getVPLoopInfo() { return VPLInfo; }

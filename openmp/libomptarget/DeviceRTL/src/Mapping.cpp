@@ -16,6 +16,8 @@
 
 #pragma omp declare target
 
+#include "llvm/Frontend/OpenMP/OMPGridValues.h"
+
 using namespace _OMP;
 
 namespace _OMP {
@@ -25,6 +27,10 @@ namespace impl {
 ///
 ///{
 #pragma omp begin declare variant match(device = {arch(amdgcn)})
+
+constexpr const llvm::omp::GV &getGridValue() {
+  return llvm::omp::getAMDGPUGridValues<__AMDGCN_WAVEFRONT_SIZE>();
+}
 
 uint32_t getGridDim(uint32_t n, uint16_t d) {
   uint32_t q = n / d;
@@ -78,15 +84,12 @@ uint32_t getNumberOfBlocks() {
 }
 
 uint32_t getNumberOfProcessorElements() {
-  // TODO
-  return mapping::getBlockSize();
+  return getBlockSize();
 }
 
 uint32_t getWarpId() {
   return mapping::getThreadIdInBlock() / mapping::getWarpSize();
 }
-
-uint32_t getWarpSize() { return 64; }
 
 uint32_t getNumberOfWarpsInBlock() {
   return mapping::getBlockSize() / mapping::getWarpSize();
@@ -100,6 +103,10 @@ uint32_t getNumberOfWarpsInBlock() {
 ///{
 #pragma omp begin declare variant match(                                       \
     device = {arch(nvptx, nvptx64)}, implementation = {extension(match_any)})
+
+constexpr const llvm::omp::GV &getGridValue() {
+  return llvm::omp::NVPTXGridValues;
+}
 
 LaneMaskTy activemask() {
   unsigned int Mask;
@@ -144,8 +151,6 @@ uint32_t getWarpId() {
   return mapping::getThreadIdInBlock() / mapping::getWarpSize();
 }
 
-uint32_t getWarpSize() { return 32; }
-
 uint32_t getNumberOfWarpsInBlock() {
   return (mapping::getBlockSize() + mapping::getWarpSize() - 1) /
          mapping::getWarpSize();
@@ -154,17 +159,23 @@ uint32_t getNumberOfWarpsInBlock() {
 #pragma omp end declare variant
 ///}
 
+uint32_t getWarpSize() { return getGridValue().GV_Warp_Size; }
+
 } // namespace impl
 } // namespace _OMP
 
-bool mapping::isMainThreadInGenericMode() {
-  if (mapping::isSPMDMode() || icv::Level)
+bool mapping::isMainThreadInGenericMode(bool IsSPMD) {
+  if (IsSPMD || icv::Level)
     return false;
 
   // Check if this is the last warp in the block.
   uint32_t MainTId = (mapping::getNumberOfProcessorElements() - 1) &
                      ~(mapping::getWarpSize() - 1);
   return mapping::getThreadIdInBlock() == MainTId;
+}
+
+bool mapping::isMainThreadInGenericMode() {
+  return mapping::isMainThreadInGenericMode(mapping::isSPMDMode());
 }
 
 bool mapping::isLeaderInWarp() {
@@ -218,4 +229,15 @@ bool mapping::isSPMDMode() { return IsSPMDMode; }
 bool mapping::isGenericMode() { return !isSPMDMode(); }
 ///}
 
+extern "C" {
+__attribute__((noinline)) uint32_t __kmpc_get_hardware_thread_id_in_block() {
+  FunctionTracingRAII();
+  return mapping::getThreadIdInBlock();
+}
+
+__attribute__((noinline)) uint32_t __kmpc_get_hardware_num_threads_in_block() {
+  FunctionTracingRAII();
+  return mapping::getNumberOfProcessorElements();
+}
+}
 #pragma omp end declare target

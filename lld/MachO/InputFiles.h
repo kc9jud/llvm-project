@@ -69,6 +69,7 @@ public:
   virtual ~InputFile() = default;
   Kind kind() const { return fileKind; }
   StringRef getName() const { return name; }
+  static void resetIdCount() { idCount = 0; }
 
   MemoryBufferRef mb;
 
@@ -119,6 +120,7 @@ private:
                         SubsectionMap &);
   void parseDebugInfo();
   void parseDataInCode();
+  void registerCompactUnwind();
 };
 
 // command-line -sectcreate file
@@ -184,8 +186,13 @@ private:
 class ArchiveFile final : public InputFile {
 public:
   explicit ArchiveFile(std::unique_ptr<llvm::object::Archive> &&file);
+  void addLazySymbols();
+  void fetch(const llvm::object::Archive::Symbol &);
+  // LLD normally doesn't use Error for error-handling, but the underlying
+  // Archive library does, so this is the cleanest way to wrap it.
+  Error fetch(const llvm::object::Archive::Child &, StringRef reason);
+  const llvm::object::Archive &getArchive() const { return *file; };
   static bool classof(const InputFile *f) { return f->kind() == ArchiveKind; }
-  void fetch(const llvm::object::Archive::Symbol &sym);
 
 private:
   std::unique_ptr<llvm::object::Archive> file;

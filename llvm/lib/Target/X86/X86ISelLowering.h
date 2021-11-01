@@ -566,6 +566,27 @@ namespace llvm {
     FMADDSUB_RND,
     FMSUBADD_RND,
 
+    // AVX512-FP16 complex addition and multiplication.
+    VFMADDC,
+    VFMADDC_RND,
+    VFCMADDC,
+    VFCMADDC_RND,
+
+    VFMULC,
+    VFMULC_RND,
+    VFCMULC,
+    VFCMULC_RND,
+
+    VFMADDCSH,
+    VFMADDCSH_RND,
+    VFCMADDCSH,
+    VFCMADDCSH_RND,
+
+    VFMULCSH,
+    VFMULCSH_RND,
+    VFCMULCSH,
+    VFCMULCSH_RND,
+
     // Compress and expand.
     COMPRESS,
     EXPAND,
@@ -633,8 +654,8 @@ namespace llvm {
     // is needed so that this can be expanded with control flow.
     VASTART_SAVE_XMM_REGS,
 
-    // Windows's _chkstk call to do stack probing.
-    WIN_ALLOCA,
+    // A stack checking function call. On Windows it's _chkstk call.
+    DYN_ALLOCA,
 
     // For allocating variable amounts of stack space when using
     // segmented stacks. Check if the current stacklet has enough space, and
@@ -890,6 +911,25 @@ namespace llvm {
     /// as zero if AllowPartialUndefs is set, else we fail and return false.
     bool isConstantSplat(SDValue Op, APInt &SplatVal,
                          bool AllowPartialUndefs = true);
+
+    /// Check if Op is a load operation that could be folded into some other x86
+    /// instruction as a memory operand. Example: vpaddd (%rdi), %xmm0, %xmm0.
+    bool mayFoldLoad(SDValue Op, const X86Subtarget &Subtarget,
+                     bool AssumeSingleUse = false);
+
+    /// Check if Op is a load operation that could be folded into a vector splat
+    /// instruction as a memory operand. Example: vbroadcastss 16(%rdi), %xmm2.
+    bool mayFoldLoadIntoBroadcastFromMem(SDValue Op, MVT EltVT,
+                                         const X86Subtarget &Subtarget,
+                                         bool AssumeSingleUse = false);
+
+    /// Check if Op is a value that could be used to fold a store into some
+    /// other x86 instruction as a memory operand. Ex: pextrb $0, %xmm0, (%rdi).
+    bool mayFoldIntoStore(SDValue Op);
+
+    /// Check if Op is an operation that could be folded into a zero extend x86
+    /// instruction.
+    bool mayFoldIntoZeroExtend(SDValue Op);
   } // end namespace X86
 
   //===--------------------------------------------------------------------===//
@@ -925,7 +965,7 @@ namespace llvm {
     /// function arguments in the caller parameter area. For X86, aggregates
     /// that contains are placed at 16-byte boundaries while the rest are at
     /// 4-byte boundaries.
-    unsigned getByValTypeAlignment(Type *Ty,
+    uint64_t getByValTypeAlignment(Type *Ty,
                                    const DataLayout &DL) const override;
 
     EVT getOptimalMemOpType(const MemOp &Op,
@@ -1477,16 +1517,11 @@ namespace llvm {
 
     /// Check whether the call is eligible for tail call optimization. Targets
     /// that want to do tail call optimization should implement this function.
-    bool IsEligibleForTailCallOptimization(SDValue Callee,
-                                           CallingConv::ID CalleeCC,
-                                           bool isVarArg,
-                                           bool isCalleeStructRet,
-                                           bool isCallerStructRet,
-                                           Type *RetTy,
-                                    const SmallVectorImpl<ISD::OutputArg> &Outs,
-                                    const SmallVectorImpl<SDValue> &OutVals,
-                                    const SmallVectorImpl<ISD::InputArg> &Ins,
-                                           SelectionDAG& DAG) const;
+    bool IsEligibleForTailCallOptimization(
+        SDValue Callee, CallingConv::ID CalleeCC, bool IsCalleeStackStructRet,
+        bool isVarArg, Type *RetTy, const SmallVectorImpl<ISD::OutputArg> &Outs,
+        const SmallVectorImpl<SDValue> &OutVals,
+        const SmallVectorImpl<ISD::InputArg> &Ins, SelectionDAG &DAG) const;
     SDValue EmitTailCallLoadRetAddr(SelectionDAG &DAG, SDValue &OutRetAddr,
                                     SDValue Chain, bool IsTailCall,
                                     bool Is64Bit, int FPDiff,
@@ -1545,6 +1580,9 @@ namespace llvm {
     SDValue LowerFLT_ROUNDS_(SDValue Op, SelectionDAG &DAG) const;
     SDValue LowerSET_ROUNDING(SDValue Op, SelectionDAG &DAG) const;
     SDValue LowerWin64_i128OP(SDValue Op, SelectionDAG &DAG) const;
+    SDValue LowerWin64_FP_TO_INT128(SDValue Op, SelectionDAG &DAG,
+                                    SDValue &Chain) const;
+    SDValue LowerWin64_INT128_TO_FP(SDValue Op, SelectionDAG &DAG) const;
     SDValue LowerGC_TRANSITION(SDValue Op, SelectionDAG &DAG) const;
     SDValue LowerINTRINSIC_WO_CHAIN(SDValue Op, SelectionDAG &DAG) const;
     SDValue lowerFaddFsub(SDValue Op, SelectionDAG &DAG) const;

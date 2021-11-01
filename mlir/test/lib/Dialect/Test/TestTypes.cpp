@@ -22,7 +22,7 @@
 #include "llvm/ADT/TypeSwitch.h"
 
 using namespace mlir;
-using namespace mlir::test;
+using namespace test;
 
 // Custom parser for SignednessSemantics.
 static ParseResult
@@ -32,14 +32,13 @@ parseSignedness(DialectAsmParser &parser,
   auto loc = parser.getCurrentLocation();
   if (parser.parseKeyword(&signStr))
     return failure();
-  if (signStr.compare_insensitive("u") ||
-      signStr.compare_insensitive("unsigned"))
+  if (signStr.equals_insensitive("u") || signStr.equals_insensitive("unsigned"))
     result = TestIntegerType::SignednessSemantics::Unsigned;
-  else if (signStr.compare_insensitive("s") ||
-           signStr.compare_insensitive("signed"))
+  else if (signStr.equals_insensitive("s") ||
+           signStr.equals_insensitive("signed"))
     result = TestIntegerType::SignednessSemantics::Signed;
-  else if (signStr.compare_insensitive("n") ||
-           signStr.compare_insensitive("none"))
+  else if (signStr.equals_insensitive("n") ||
+           signStr.equals_insensitive("none"))
     result = TestIntegerType::SignednessSemantics::Signless;
   else
     return parser.emitError(loc, "expected signed, unsigned, or none");
@@ -65,7 +64,6 @@ static void printSignedness(DialectAsmPrinter &printer,
 // The functions don't need to be in the header file, but need to be in the mlir
 // namespace. Declare them here, then define them immediately below. Separating
 // the declaration and definition adheres to the LLVM coding standards.
-namespace mlir {
 namespace test {
 // FieldInfo is used as part of a parameter, so equality comparison is
 // compulsory.
@@ -73,16 +71,15 @@ static bool operator==(const FieldInfo &a, const FieldInfo &b);
 // FieldInfo is used as part of a parameter, so a hash will be computed.
 static llvm::hash_code hash_value(const FieldInfo &fi); // NOLINT
 } // namespace test
-} // namespace mlir
 
 // FieldInfo is used as part of a parameter, so equality comparison is
 // compulsory.
-static bool mlir::test::operator==(const FieldInfo &a, const FieldInfo &b) {
+static bool test::operator==(const FieldInfo &a, const FieldInfo &b) {
   return a.name == b.name && a.type == b.type;
 }
 
 // FieldInfo is used as part of a parameter, so a hash will be computed.
-static llvm::hash_code mlir::test::hash_value(const FieldInfo &fi) { // NOLINT
+static llvm::hash_code test::hash_value(const FieldInfo &fi) { // NOLINT
   return llvm::hash_combine(fi.name, fi.type);
 }
 
@@ -90,7 +87,7 @@ static llvm::hash_code mlir::test::hash_value(const FieldInfo &fi) { // NOLINT
 // CompoundAType
 //===----------------------------------------------------------------------===//
 
-Type CompoundAType::parse(MLIRContext *ctxt, DialectAsmParser &parser) {
+Type CompoundAType::parse(DialectAsmParser &parser) {
   int widthOfSomething;
   Type oneType;
   SmallVector<int, 4> arrayOfInts;
@@ -109,7 +106,7 @@ Type CompoundAType::parse(MLIRContext *ctxt, DialectAsmParser &parser) {
   if (parser.parseRSquare() || parser.parseGreater())
     return Type();
 
-  return get(ctxt, widthOfSomething, oneType, arrayOfInts);
+  return get(parser.getContext(), widthOfSomething, oneType, arrayOfInts);
 }
 void CompoundAType::print(DialectAsmPrinter &printer) const {
   printer << "cmpnd_a<" << getWidthOfSomething() << ", " << getOneType()
@@ -145,11 +142,11 @@ void TestType::printTypeC(Location loc) const {
 // TestTypeWithLayout
 //===----------------------------------------------------------------------===//
 
-Type TestTypeWithLayoutType::parse(MLIRContext *ctx, DialectAsmParser &parser) {
+Type TestTypeWithLayoutType::parse(DialectAsmParser &parser) {
   unsigned val;
   if (parser.parseLess() || parser.parseInteger(val) || parser.parseGreater())
     return Type();
-  return TestTypeWithLayoutType::get(ctx, val);
+  return TestTypeWithLayoutType::get(parser.getContext(), val);
 }
 
 void TestTypeWithLayoutType::print(DialectAsmPrinter &printer) const {
@@ -238,15 +235,14 @@ void TestDialect::registerTypes() {
   SimpleAType::attachInterface<PtrElementModel>(*getContext());
 }
 
-static Type parseTestType(MLIRContext *ctxt, DialectAsmParser &parser,
-                          SetVector<Type> &stack) {
+static Type parseTestType(DialectAsmParser &parser, SetVector<Type> &stack) {
   StringRef typeTag;
   if (failed(parser.parseKeyword(&typeTag)))
     return Type();
 
   {
     Type genType;
-    auto parseResult = generatedTypeParser(ctxt, parser, typeTag, genType);
+    auto parseResult = generatedTypeParser(parser, typeTag, genType);
     if (parseResult.hasValue())
       return genType;
   }
@@ -259,7 +255,7 @@ static Type parseTestType(MLIRContext *ctxt, DialectAsmParser &parser,
   StringRef name;
   if (parser.parseLess() || parser.parseKeyword(&name))
     return Type();
-  auto rec = TestRecursiveType::get(parser.getBuilder().getContext(), name);
+  auto rec = TestRecursiveType::get(parser.getContext(), name);
 
   // If this type already has been parsed above in the stack, expect just the
   // name.
@@ -273,7 +269,7 @@ static Type parseTestType(MLIRContext *ctxt, DialectAsmParser &parser,
   if (failed(parser.parseComma()))
     return Type();
   stack.insert(rec);
-  Type subtype = parseTestType(ctxt, parser, stack);
+  Type subtype = parseTestType(parser, stack);
   stack.pop_back();
   if (!subtype || failed(parser.parseGreater()) || failed(rec.setBody(subtype)))
     return Type();
@@ -283,7 +279,7 @@ static Type parseTestType(MLIRContext *ctxt, DialectAsmParser &parser,
 
 Type TestDialect::parseType(DialectAsmParser &parser) const {
   SetVector<Type> stack;
-  return parseTestType(getContext(), parser, stack);
+  return parseTestType(parser, stack);
 }
 
 static void printTestType(Type type, DialectAsmPrinter &printer,

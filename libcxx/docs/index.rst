@@ -43,8 +43,9 @@ Getting Started with libc++
    Status/Cxx17
    Status/Cxx20
    Status/Cxx2b
-   Status/Ranges
    Status/Format
+   Status/Ranges
+   Status/Spaceship
 
 
 .. toctree::
@@ -102,7 +103,7 @@ velocity, libc++ drops support for older compilers as newer ones are released.
 ============ =============== ========================== =====================
 Compiler     Versions        Restrictions               Support policy
 ============ =============== ========================== =====================
-Clang        11, 12                                     latest two stable releases per `LLVM's release page <https://releases.llvm.org>`_
+Clang        12, 13                                     latest two stable releases per `LLVM's release page <https://releases.llvm.org>`_
 AppleClang   12                                         latest stable release per `Xcode's release page <https://developer.apple.com/documentation/xcode-release-notes>`_
 GCC          11              In C++11 or later only     latest stable release per `GCC's release page <https://gcc.gnu.org/releases.html>`_
 ============ =============== ========================== =====================
@@ -128,8 +129,8 @@ for all the platforms and compilers that we claim to support. If a platform or c
 is not listed here, it is not officially supported. It may happen to work, and
 in practice the library is known to work on some platforms not listed here, but
 we don't make any guarantees. If you would like your compiler and/or platform
-to be formally supported and listed here,
-please work with the libc++ team to set up testing for your configuration.
+to be formally supported and listed here, please work with the libc++ team to set
+up testing for your configuration.
 
 
 C++ Dialect Support

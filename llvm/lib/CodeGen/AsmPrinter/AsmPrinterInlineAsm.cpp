@@ -30,10 +30,10 @@
 #include "llvm/MC/MCStreamer.h"
 #include "llvm/MC/MCSubtargetInfo.h"
 #include "llvm/MC/MCSymbol.h"
+#include "llvm/MC/TargetRegistry.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/SourceMgr.h"
-#include "llvm/Support/TargetRegistry.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Target/TargetMachine.h"
 using namespace llvm;
@@ -540,7 +540,7 @@ void AsmPrinter::emitInlineAsm(const MachineInstr *MI) const {
         "preserved across the asm statement, and clobbering them may "
         "lead to undefined behaviour.";
     MMI->getModule()->getContext().diagnose(DiagnosticInfoInlineAsm(
-        LocCookie, Msg.c_str(), DiagnosticSeverity::DS_Warning));
+        LocCookie, Msg, DiagnosticSeverity::DS_Warning));
     MMI->getModule()->getContext().diagnose(
         DiagnosticInfoInlineAsm(LocCookie, Note, DiagnosticSeverity::DS_Note));
   }
@@ -582,7 +582,7 @@ void AsmPrinter::PrintSpecial(const MachineInstr *MI, raw_ostream &OS,
     raw_string_ostream Msg(msg);
     Msg << "Unknown special formatter '" << Code
          << "' for machine instr: " << *MI;
-    report_fatal_error(Msg.str());
+    report_fatal_error(Twine(Msg.str()));
   }
 }
 

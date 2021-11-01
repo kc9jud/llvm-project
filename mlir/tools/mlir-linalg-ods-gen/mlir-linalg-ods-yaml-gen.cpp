@@ -95,6 +95,7 @@ struct ScalarSymbolicCast {
   // NOTE: This must be of arity 1, but to break the self-referential cycle,
   // we use a heap allocated vector.
   std::vector<ScalarExpression> operands;
+  bool isUnsignedCast;
 };
 
 struct ScalarExpression {
@@ -278,6 +279,7 @@ struct MappingTraits<ScalarSymbolicCast> {
   static void mapping(IO &io, ScalarSymbolicCast &info) {
     io.mapRequired("type_var", info.typeVar);
     io.mapRequired("operands", info.operands);
+    io.mapRequired("is_unsigned_cast", info.isUnsignedCast);
   }
 };
 
@@ -441,10 +443,7 @@ static const char structuredOpOdsHeaderFormat[] = R"FMT(
 // Op definition for {0}
 //===----------------------------------------------------------------------===//
 
-def {0} : LinalgStructuredBase_Op<"{1}", !listconcat([
-  AttrSizedOperandSegments,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>,
-  SingleBlockImplicitTerminator<"YieldOp">],
+def {0} : LinalgStructuredBase_Op<"{1}", !listconcat([AttrSizedOperandSegments],
   /*extraInterfaces=*/[{2}])> {
     {3}
     let arguments = (ins
@@ -457,15 +456,22 @@ def {0} : LinalgStructuredBase_Op<"{1}", !listconcat([
     let skipDefaultBuilders = 1;
     let builders = [
       OpBuilder<
-      (ins "ValueRange":$inputs, "ValueRange":$outputs),
+      (ins "ValueRange":$inputs, "ValueRange":$outputs,
+            CArg<"ArrayRef<NamedAttribute>", "{{}">:$attributes),
       [{{
         $_state.addOperands(inputs);
         $_state.addOperands(outputs);
+        SmallVector<Type> resultTensorTypes;
+        copy_if(outputs.getTypes(),
+                std::back_inserter(resultTensorTypes),
+                [](Type type) {{ return type.isa<RankedTensorType>(); });
+        $_state.addTypes(resultTensorTypes);
         $_state.addAttribute(
           "operand_segment_sizes",
           $_builder.getI32VectorAttr({{
             static_cast<int32_t>(inputs.size()),
             static_cast<int32_t>(outputs.size())}));
+        $_state.addAttributes(attributes);
         createAndFillStructuredOpRegion<{0}>(
           $_builder,
           $_state,
@@ -474,11 +480,13 @@ def {0} : LinalgStructuredBase_Op<"{1}", !listconcat([
       }]>,
       OpBuilder<
       (ins "TypeRange":$resultTensorTypes, "ValueRange":$inputs,
-            "ValueRange":$outputs),
+            "ValueRange":$outputs,
+            CArg<"ArrayRef<NamedAttribute>", "{{}">:$attributes),
       [{{
         $_state.addOperands(inputs);
         $_state.addOperands(outputs);
         $_state.addTypes(resultTensorTypes);
+        $_state.addAttributes(attributes);
         $_state.addAttribute(
           "operand_segment_sizes",
           $_builder.getI32VectorAttr({{
@@ -532,7 +540,8 @@ def {0} : LinalgStructuredBase_Op<"{1}", !listconcat([
 static const char structuredOpBuilderFormat[] = R"FMT(
   , OpBuilder<
   (ins "TypeRange":$resultTensorTypes, "ValueRange":$inputs,
-       "ValueRange":$outputs, {1}),
+       "ValueRange":$outputs, {1},
+       CArg<"ArrayRef<NamedAttribute>", "{{}">:$attributes),
   [{{
     $_state.addOperands(inputs);
     $_state.addOperands(outputs);
@@ -548,6 +557,7 @@ static const char structuredOpBuilderFormat[] = R"FMT(
       TypeRange(inputs),
       TypeRange(outputs));
     {2}
+    $_state.addAttributes(attributes);
   }]>
 )FMT";
 
@@ -975,9 +985,10 @@ void {0}::regionBuilder(ImplicitLocOpBuilder &b, Block &block) {{
             return None;
           }
           std::string cppIdent = llvm::formatv("value{0}", ++localCounter);
-          stmts.push_back(llvm::formatv("Value {0} = helper.cast({1}, {2});",
-                                        cppIdent, typeCppValue.getValue(),
-                                        *operandCppValue));
+          stmts.push_back(
+              llvm::formatv("Value {0} = helper.cast({1}, {2}, {3});", cppIdent,
+                            typeCppValue.getValue(), *operandCppValue,
+                            expression.symbolicCast->isUnsignedCast));
           return cppIdent;
         }
         emitError(genContext.getLoc()) << "unknown ScalarExpression type";

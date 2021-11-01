@@ -382,30 +382,30 @@ static bool addIfNotExistent(LLVMContext &Ctx, const Attribute &Attr,
 
   if (Attr.isEnumAttribute()) {
     Attribute::AttrKind Kind = Attr.getKindAsEnum();
-    if (Attrs.hasAttribute(AttrIdx, Kind))
+    if (Attrs.hasAttributeAtIndex(AttrIdx, Kind))
       if (!ForceReplace &&
-          isEqualOrWorse(Attr, Attrs.getAttribute(AttrIdx, Kind)))
+          isEqualOrWorse(Attr, Attrs.getAttributeAtIndex(AttrIdx, Kind)))
         return false;
-    Attrs = Attrs.addAttribute(Ctx, AttrIdx, Attr);
+    Attrs = Attrs.addAttributeAtIndex(Ctx, AttrIdx, Attr);
     return true;
   }
   if (Attr.isStringAttribute()) {
     StringRef Kind = Attr.getKindAsString();
-    if (Attrs.hasAttribute(AttrIdx, Kind))
+    if (Attrs.hasAttributeAtIndex(AttrIdx, Kind))
       if (!ForceReplace &&
-          isEqualOrWorse(Attr, Attrs.getAttribute(AttrIdx, Kind)))
+          isEqualOrWorse(Attr, Attrs.getAttributeAtIndex(AttrIdx, Kind)))
         return false;
-    Attrs = Attrs.addAttribute(Ctx, AttrIdx, Attr);
+    Attrs = Attrs.addAttributeAtIndex(Ctx, AttrIdx, Attr);
     return true;
   }
   if (Attr.isIntAttribute()) {
     Attribute::AttrKind Kind = Attr.getKindAsEnum();
-    if (Attrs.hasAttribute(AttrIdx, Kind))
+    if (Attrs.hasAttributeAtIndex(AttrIdx, Kind))
       if (!ForceReplace &&
-          isEqualOrWorse(Attr, Attrs.getAttribute(AttrIdx, Kind)))
+          isEqualOrWorse(Attr, Attrs.getAttributeAtIndex(AttrIdx, Kind)))
         return false;
-    Attrs = Attrs.removeAttribute(Ctx, AttrIdx, Kind);
-    Attrs = Attrs.addAttribute(Ctx, AttrIdx, Attr);
+    Attrs = Attrs.removeAttributeAtIndex(Ctx, AttrIdx, Kind);
+    Attrs = Attrs.addAttributeAtIndex(Ctx, AttrIdx, Attr);
     return true;
   }
 
@@ -658,9 +658,9 @@ bool IRPosition::getAttrsFromIRAttr(Attribute::AttrKind AK,
   else
     AttrList = getAssociatedFunction()->getAttributes();
 
-  bool HasAttr = AttrList.hasAttribute(getAttrIdx(), AK);
+  bool HasAttr = AttrList.hasAttributeAtIndex(getAttrIdx(), AK);
   if (HasAttr)
-    Attrs.push_back(AttrList.getAttribute(getAttrIdx(), AK));
+    Attrs.push_back(AttrList.getAttributeAtIndex(getAttrIdx(), AK));
   return HasAttr;
 }
 
@@ -1043,6 +1043,8 @@ bool Attributor::checkForAllUses(function_ref<bool(const Use &, bool &)> Pred,
 
     if (auto *SI = dyn_cast<StoreInst>(U->getUser())) {
       if (&SI->getOperandUse(0) == U) {
+        if (!Visited.insert(U).second)
+          continue;
         SmallSetVector<Value *, 4> PotentialCopies;
         if (AA::getPotentialCopiesOfStoredValue(*this, *SI, PotentialCopies,
                                                 QueryingAA,
@@ -1121,6 +1123,10 @@ bool Attributor::checkForAllCallSites(function_ref<bool(AbstractCallSite)> Pred,
     if (ConstantExpr *CE = dyn_cast<ConstantExpr>(U.getUser())) {
       if (CE->isCast() && CE->getType()->isPointerTy() &&
           CE->getType()->getPointerElementType()->isFunctionTy()) {
+        LLVM_DEBUG(
+            dbgs() << "[Attributor] Use, is constant cast expression, add "
+                   << CE->getNumUses()
+                   << " uses of that expression instead!\n");
         for (const Use &CEU : CE->uses())
           Uses.push_back(&CEU);
         continue;
@@ -1141,9 +1147,13 @@ bool Attributor::checkForAllCallSites(function_ref<bool(AbstractCallSite)> Pred,
     const Use *EffectiveUse =
         ACS.isCallbackCall() ? &ACS.getCalleeUseForCallback() : &U;
     if (!ACS.isCallee(EffectiveUse)) {
-      if (!RequireAllCallSites)
+      if (!RequireAllCallSites) {
+        LLVM_DEBUG(dbgs() << "[Attributor] User " << *EffectiveUse->getUser()
+                          << " is not a call of " << Fn.getName()
+                          << ", skip use\n");
         continue;
-      LLVM_DEBUG(dbgs() << "[Attributor] User " << EffectiveUse->getUser()
+      }
+      LLVM_DEBUG(dbgs() << "[Attributor] User " << *EffectiveUse->getUser()
                         << " is an invalid use of " << Fn.getName() << "\n");
       return false;
     }
@@ -1412,6 +1422,16 @@ void Attributor::runTillFixpoint() {
 
   } while (!Worklist.empty() && (IterationCounter++ < MaxFixedPointIterations ||
                                  VerifyMaxFixpointIterations));
+
+  if (IterationCounter > MaxFixedPointIterations && !Worklist.empty()) {
+    auto Remark = [&](OptimizationRemarkMissed ORM) {
+      return ORM << "Attributor did not reach a fixpoint after "
+                 << ore::NV("Iterations", MaxFixedPointIterations)
+                 << " iterations.";
+    };
+    Function *F = Worklist.front()->getIRPosition().getAssociatedFunction();
+    emitRemark<OptimizationRemarkMissed>(F, "FixedPoint", Remark);
+  }
 
   LLVM_DEBUG(dbgs() << "\n[Attributor] Fixpoint iteration done after: "
                     << IterationCounter << "/" << MaxFixpointIterations
@@ -1922,7 +1942,7 @@ void Attributor::createShallowWrapper(Function &F) {
 
   CallInst *CI = CallInst::Create(&F, Args, "", EntryBB);
   CI->setTailCall(true);
-  CI->addAttribute(AttributeList::FunctionIndex, Attribute::NoInline);
+  CI->addFnAttr(Attribute::NoInline);
   ReturnInst::Create(Ctx, CI->getType()->isVoidTy() ? nullptr : CI, EntryBB);
 
   NumFnShallowWrappersCreated++;
@@ -2159,7 +2179,7 @@ ChangeStatus Attributor::rewriteFunctionSignatures(
       } else {
         NewArgumentTypes.push_back(Arg.getType());
         NewArgumentAttributes.push_back(
-            OldFnAttributeList.getParamAttributes(Arg.getArgNo()));
+            OldFnAttributeList.getParamAttrs(Arg.getArgNo()));
       }
     }
 
@@ -2190,8 +2210,8 @@ ChangeStatus Attributor::rewriteFunctionSignatures(
     // the function.
     LLVMContext &Ctx = OldFn->getContext();
     NewFn->setAttributes(AttributeList::get(
-        Ctx, OldFnAttributeList.getFnAttributes(),
-        OldFnAttributeList.getRetAttributes(), NewArgumentAttributes));
+        Ctx, OldFnAttributeList.getFnAttrs(), OldFnAttributeList.getRetAttrs(),
+        NewArgumentAttributes));
 
     // Since we have now created the new function, splice the body of the old
     // function right into the new function, leaving the old rotting hulk of the
@@ -2236,7 +2256,7 @@ ChangeStatus Attributor::rewriteFunctionSignatures(
         } else {
           NewArgOperands.push_back(ACS.getCallArgOperand(OldArgNum));
           NewArgOperandAttributes.push_back(
-              OldCallAttributeList.getParamAttributes(OldArgNum));
+              OldCallAttributeList.getParamAttrs(OldArgNum));
         }
       }
 
@@ -2266,8 +2286,8 @@ ChangeStatus Attributor::rewriteFunctionSignatures(
       NewCB->setCallingConv(OldCB->getCallingConv());
       NewCB->takeName(OldCB);
       NewCB->setAttributes(AttributeList::get(
-          Ctx, OldCallAttributeList.getFnAttributes(),
-          OldCallAttributeList.getRetAttributes(), NewArgOperandAttributes));
+          Ctx, OldCallAttributeList.getFnAttrs(),
+          OldCallAttributeList.getRetAttrs(), NewArgOperandAttributes));
 
       CallSitePairs.push_back({OldCB, NewCB});
       return true;
@@ -2590,7 +2610,7 @@ void Attributor::identifyDefaultAbstractAttributes(Function &F) {
       getOrCreateAAFor<AAValueSimplify>(CBRetPos);
     }
 
-    for (int I = 0, E = CB.getNumArgOperands(); I < E; ++I) {
+    for (int I = 0, E = CB.arg_size(); I < E; ++I) {
 
       IRPosition CBArgPos = IRPosition::callsite_argument(CB, I);
 

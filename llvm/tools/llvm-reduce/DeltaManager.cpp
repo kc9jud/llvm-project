@@ -25,8 +25,10 @@
 #include "deltas/ReduceGlobalVars.h"
 #include "deltas/ReduceInstructions.h"
 #include "deltas/ReduceMetadata.h"
-#include "deltas/ReduceModuleInlineAsm.h"
+#include "deltas/ReduceModuleData.h"
 #include "deltas/ReduceOperandBundles.h"
+#include "deltas/ReduceOperands.h"
+#include "deltas/ReduceOperandsToArgs.h"
 #include "deltas/ReduceSpecialGlobals.h"
 #include "llvm/Support/CommandLine.h"
 
@@ -49,9 +51,13 @@ static cl::opt<std::string>
   DELTA_PASS("metadata", reduceMetadataDeltaPass)                              \
   DELTA_PASS("arguments", reduceArgumentsDeltaPass)                            \
   DELTA_PASS("instructions", reduceInstructionsDeltaPass)                      \
+  DELTA_PASS("operands-zero", reduceOperandsZeroDeltaPass)                     \
+  DELTA_PASS("operands-one", reduceOperandsOneDeltaPass)                       \
+  DELTA_PASS("operands-undef", reduceOperandsUndefDeltaPass)                   \
+  DELTA_PASS("operands-to-args", reduceOperandsToArgsDeltaPass)                \
   DELTA_PASS("operand-bundles", reduceOperandBundesDeltaPass)                  \
   DELTA_PASS("attributes", reduceAttributesDeltaPass)                          \
-  DELTA_PASS("module-inline-asm", reduceModuleInlineAsmDeltaPass)
+  DELTA_PASS("module-data", reduceModuleDataDeltaPass)
 
 static void runAllDeltaPasses(TestRunner &Tester) {
 #define DELTA_PASS(NAME, FUNC) FUNC(Tester);

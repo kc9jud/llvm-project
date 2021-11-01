@@ -5,6 +5,36 @@ llvm.mlir.global private @invalid_global_alignment(42 : i64) {alignment = 63} : 
 
 // -----
 
+llvm.func @ctor() {
+  llvm.return
+}
+
+// expected-error@+1{{mismatch between the number of ctors and the number of priorities}}
+llvm.mlir.global_ctors {ctors = [@ctor], priorities = []}
+
+// -----
+
+llvm.func @dtor() {
+  llvm.return
+}
+
+// expected-error@+1{{mismatch between the number of dtors and the number of priorities}}
+llvm.mlir.global_dtors {dtors = [@dtor], priorities = [0 : i32, 32767 : i32]}
+
+// -----
+
+// expected-error@+1{{'ctor' does not reference a valid LLVM function}}
+llvm.mlir.global_ctors {ctors = [@ctor], priorities = [0 : i32]}
+
+// -----
+
+llvm.func @dtor()
+
+// expected-error@+1{{'dtor' does not have a definition}}
+llvm.mlir.global_dtors {dtors = [@dtor], priorities = [0 : i32]}
+
+// -----
+
 // expected-error@+1{{expected llvm.noalias argument attribute to be a unit attribute}}
 func @invalid_noalias(%arg0: i32 {llvm.noalias = 3}) {
   "llvm.return"() : () -> ()
@@ -909,7 +939,7 @@ module {
 
 module {
   llvm.func @accessGroups(%arg0 : !llvm.ptr<i32>) {
-      // expected-error@below {{expected '@func1' to reference a metadata op}}
+      // expected-error@below {{expected '@func1' to specify a fully qualified reference}}
       %0 = llvm.load %arg0 { "access_groups" = [@func1] } : !llvm.ptr<i32>
       llvm.return
   }
@@ -922,11 +952,87 @@ module {
 
 module {
   llvm.func @accessGroups(%arg0 : !llvm.ptr<i32>) {
-      // expected-error@below {{expected '@metadata' to reference an access_group op}}
-      %0 = llvm.load %arg0 { "access_groups" = [@metadata] } : !llvm.ptr<i32>
+      // expected-error@below {{expected '@accessGroups::@group1' to reference a metadata op}}
+      %0 = llvm.load %arg0 { "access_groups" = [@accessGroups::@group1] } : !llvm.ptr<i32>
       llvm.return
   }
   llvm.metadata @metadata {
+    llvm.return
+  }
+}
+
+// -----
+
+module {
+  llvm.func @accessGroups(%arg0 : !llvm.ptr<i32>) {
+      // expected-error@below {{expected '@metadata::@group1' to be a valid reference}}
+      %0 = llvm.load %arg0 { "access_groups" = [@metadata::@group1] } : !llvm.ptr<i32>
+      llvm.return
+  }
+  llvm.metadata @metadata {
+    llvm.return
+  }
+}
+
+// -----
+
+module {
+  llvm.func @accessGroups(%arg0 : !llvm.ptr<i32>) {
+      // expected-error@below {{expected '@metadata::@scope' to resolve to a llvm.access_group}}
+      %0 = llvm.load %arg0 { "access_groups" = [@metadata::@scope] } : !llvm.ptr<i32>
+      llvm.return
+  }
+  llvm.metadata @metadata {
+    llvm.alias_scope_domain @domain
+    llvm.alias_scope @scope { domain = @domain }
+    llvm.return
+  }
+}
+
+// -----
+
+module {
+  llvm.func @accessGroups(%arg0 : !llvm.ptr<i32>) {
+      // expected-error@below {{attribute 'alias_scopes' failed to satisfy constraint: symbol ref array attribute}}
+      %0 = llvm.load %arg0 { "alias_scopes" = "test" } : !llvm.ptr<i32>
+      llvm.return
+  }
+}
+
+// -----
+
+module {
+  llvm.func @accessGroups(%arg0 : !llvm.ptr<i32>) {
+      // expected-error@below {{attribute 'noalias_scopes' failed to satisfy constraint: symbol ref array attribute}}
+      %0 = llvm.load %arg0 { "noalias_scopes" = "test" } : !llvm.ptr<i32>
+      llvm.return
+  }
+}
+
+// -----
+
+module {
+  llvm.func @aliasScope(%arg0 : !llvm.ptr<i32>) {
+      // expected-error@below {{expected '@metadata::@group' to resolve to a llvm.alias_scope}}
+      %0 = llvm.load %arg0 { "alias_scopes" = [@metadata::@group] } : !llvm.ptr<i32>
+      llvm.return
+  }
+  llvm.metadata @metadata {
+    llvm.access_group @group
+    llvm.return
+  }
+}
+
+// -----
+
+module {
+  llvm.func @aliasScope(%arg0 : !llvm.ptr<i32>) {
+      // expected-error@below {{expected '@metadata::@group' to resolve to a llvm.alias_scope}}
+      %0 = llvm.load %arg0 { "noalias_scopes" = [@metadata::@group] } : !llvm.ptr<i32>
+      llvm.return
+  }
+  llvm.metadata @metadata {
+    llvm.access_group @group
     llvm.return
   }
 }

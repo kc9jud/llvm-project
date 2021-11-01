@@ -195,6 +195,11 @@ void Parser::ParseGNUAttributes(ParsedAttributesWithRange &Attrs,
       // Expect an identifier or declaration specifier (const, int, etc.)
       if (Tok.isAnnotation())
         break;
+      if (Tok.is(tok::code_completion)) {
+        cutOffParsing();
+        Actions.CodeCompleteAttribute(AttributeCommonInfo::Syntax::AS_GNU);
+        break;
+      }
       IdentifierInfo *AttrName = Tok.getIdentifierInfo();
       if (!AttrName)
         break;
@@ -713,6 +718,12 @@ void Parser::ParseMicrosoftDeclSpecs(ParsedAttributes &Attrs,
       // Attribute not present.
       if (TryConsumeToken(tok::comma))
         continue;
+
+      if (Tok.is(tok::code_completion)) {
+        cutOffParsing();
+        Actions.CodeCompleteAttribute(AttributeCommonInfo::AS_Declspec);
+        return;
+      }
 
       // We expect either a well-known identifier or a generic string.  Anything
       // else is a malformed declspec.
@@ -2009,6 +2020,18 @@ Parser::DeclGroupPtrTy Parser::ParseDeclGroup(ParsingDeclSpec &DS,
       cutOffParsing();
       Actions.CodeCompleteAfterFunctionEquals(D);
       return nullptr;
+    }
+    // We're at the point where the parsing of function declarator is finished.
+    //
+    // A common error is that users accidently add a virtual specifier
+    // (e.g. override) in an out-line method definition.
+    // We attempt to recover by stripping all these specifiers coming after
+    // the declarator.
+    while (auto Specifier = isCXX11VirtSpecifier()) {
+      Diag(Tok, diag::err_virt_specifier_outside_class)
+          << VirtSpecifiers::getSpecifierName(Specifier)
+          << FixItHint::CreateRemoval(Tok.getLocation());
+      ConsumeToken();
     }
     // Look at the next token to make sure that this isn't a function
     // declaration.  We have to check this because __attribute__ might be the
@@ -3918,6 +3941,10 @@ void Parser::ParseDeclarationSpecifiers(DeclSpec &DS,
       isInvalid = DS.SetTypeSpecType(DeclSpec::TST_float128, Loc, PrevSpec,
                                      DiagID, Policy);
       break;
+    case tok::kw___ibm128:
+      isInvalid = DS.SetTypeSpecType(DeclSpec::TST_ibm128, Loc, PrevSpec,
+                                     DiagID, Policy);
+      break;
     case tok::kw_wchar_t:
       isInvalid = DS.SetTypeSpecType(DeclSpec::TST_wchar, Loc, PrevSpec,
                                      DiagID, Policy);
@@ -3974,8 +4001,8 @@ void Parser::ParseDeclarationSpecifiers(DeclSpec &DS,
       isInvalid = DS.SetTypeAltiVecBool(true, Loc, PrevSpec, DiagID, Policy);
       break;
     case tok::kw_pipe:
-      if (!getLangOpts().OpenCL || (getLangOpts().OpenCLVersion < 200 &&
-                                    !getLangOpts().OpenCLCPlusPlus)) {
+      if (!getLangOpts().OpenCL ||
+          getLangOpts().getOpenCLCompatibleVersion() < 200) {
         // OpenCL 2.0 and later define this keyword. OpenCL 1.2 and earlier
         // should support the "pipe" word as identifier.
         Tok.getIdentifierInfo()->revertTokenIDToIdentifier();
@@ -4171,9 +4198,8 @@ void Parser::ParseDeclarationSpecifiers(DeclSpec &DS,
                           << FixItHint::CreateRemoval(
                                  SourceRange(Loc, DS.getEndLoc()));
       else if (DiagID == diag::err_opencl_unknown_type_specifier) {
-        Diag(Loc, DiagID) << getLangOpts().OpenCLCPlusPlus
-                          << getLangOpts().getOpenCLVersionTuple().getAsString()
-                          << PrevSpec << isStorageClass;
+        Diag(Loc, DiagID) << getLangOpts().getOpenCLVersionString() << PrevSpec
+                          << isStorageClass;
       } else
         Diag(Loc, DiagID) << PrevSpec;
     }
@@ -4997,6 +5023,7 @@ bool Parser::isKnownToBeTypeSpecifier(const Token &Tok) const {
   case tok::kw__Fract:
   case tok::kw__Float16:
   case tok::kw___float128:
+  case tok::kw___ibm128:
   case tok::kw_bool:
   case tok::kw__Bool:
   case tok::kw__Decimal32:
@@ -5078,6 +5105,7 @@ bool Parser::isTypeSpecifierQualifier() {
   case tok::kw__Fract:
   case tok::kw__Float16:
   case tok::kw___float128:
+  case tok::kw___ibm128:
   case tok::kw_bool:
   case tok::kw__Bool:
   case tok::kw__Decimal32:
@@ -5161,8 +5189,8 @@ bool Parser::isDeclarationSpecifier(bool DisambiguatingWithExpression) {
 
   // OpenCL 2.0 and later define this keyword.
   case tok::kw_pipe:
-    return (getLangOpts().OpenCL && getLangOpts().OpenCLVersion >= 200) ||
-           getLangOpts().OpenCLCPlusPlus;
+    return getLangOpts().OpenCL &&
+           getLangOpts().getOpenCLCompatibleVersion() >= 200;
 
   case tok::identifier:   // foo::bar
     // Unfortunate hack to support "Class.factoryMethod" notation.
@@ -5248,6 +5276,7 @@ bool Parser::isDeclarationSpecifier(bool DisambiguatingWithExpression) {
   case tok::kw__Fract:
   case tok::kw__Float16:
   case tok::kw___float128:
+  case tok::kw___ibm128:
   case tok::kw_bool:
   case tok::kw__Bool:
   case tok::kw__Decimal32:
@@ -5692,8 +5721,8 @@ static bool isPtrOperatorToken(tok::TokenKind Kind, const LangOptions &Lang,
     return true;
 
   // OpenCL 2.0 and later define this keyword.
-  if (Kind == tok::kw_pipe &&
-      ((Lang.OpenCL && Lang.OpenCLVersion >= 200) || Lang.OpenCLCPlusPlus))
+  if (Kind == tok::kw_pipe && Lang.OpenCL &&
+      Lang.getOpenCLCompatibleVersion() >= 200)
     return true;
 
   if (!Lang.CPlusPlus)

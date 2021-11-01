@@ -12,6 +12,7 @@
 #include "CallContext.h"
 #include "llvm/ADT/Optional.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/DebugInfo/DWARF/DWARFContext.h"
 #include "llvm/DebugInfo/Symbolize/Symbolize.h"
 #include "llvm/MC/MCAsmInfo.h"
 #include "llvm/MC/MCContext.h"
@@ -29,13 +30,18 @@
 #include "llvm/ProfileData/SampleProf.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Path.h"
+#include "llvm/Transforms/IPO/SampleContextTracker.h"
 #include <list>
+#include <map>
 #include <set>
 #include <sstream>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+
+extern cl::opt<bool> EnableCSPreInliner;
+extern cl::opt<bool> UseContextCostForPreInliner;
 
 using namespace llvm;
 using namespace sampleprof;
@@ -47,7 +53,7 @@ namespace sampleprof {
 class ProfiledBinary;
 
 struct InstructionPointer {
-  ProfiledBinary *Binary;
+  const ProfiledBinary *Binary;
   union {
     // Offset of the executable segment of the binary.
     uint64_t Offset = 0;
@@ -56,11 +62,32 @@ struct InstructionPointer {
   };
   // Index to the sorted code address array of the binary.
   uint64_t Index = 0;
-  InstructionPointer(ProfiledBinary *Binary, uint64_t Address,
+  InstructionPointer(const ProfiledBinary *Binary, uint64_t Address,
                      bool RoundToNext = false);
   void advance();
   void backward();
   void update(uint64_t Addr);
+};
+
+using RangesTy = std::vector<std::pair<uint64_t, uint64_t>>;
+
+struct BinaryFunction {
+  StringRef FuncName;
+  RangesTy Ranges;
+};
+
+// Info about function range. A function can be split into multiple
+// non-continuous ranges, each range corresponds to one FuncRange.
+struct FuncRange {
+  uint64_t StartOffset;
+  // EndOffset is a exclusive bound.
+  uint64_t EndOffset;
+  // Function the range belongs to
+  BinaryFunction *Func;
+  // Whether the start offset is the real entry of the function.
+  bool IsFuncEntry = false;
+
+  StringRef getFuncName() { return Func->FuncName; }
 };
 
 // PrologEpilog offset tracker, used to filter out broken stack samples
@@ -74,9 +101,8 @@ struct PrologEpilogTracker {
   PrologEpilogTracker(ProfiledBinary *Bin) : Binary(Bin){};
 
   // Take the two addresses from the start of function as prolog
-  void inferPrologOffsets(
-      std::unordered_map<uint64_t, std::string> &FuncStartAddrMap) {
-    for (auto I : FuncStartAddrMap) {
+  void inferPrologOffsets(std::map<uint64_t, FuncRange> &FuncStartOffsetMap) {
+    for (auto I : FuncStartOffsetMap) {
       PrologEpilogSet.insert(I.first);
       InstructionPointer IP(Binary, I.first);
       IP.advance();
@@ -94,6 +120,47 @@ struct PrologEpilogTracker {
     }
   }
 };
+
+// Track function byte size under different context (outlined version as well as
+// various inlined versions). It also provides query support to get function
+// size with the best matching context, which is used to help pre-inliner use
+// accurate post-optimization size to make decisions.
+// TODO: If an inlinee is completely optimized away, ideally we should have zero
+// for its context size, currently we would misss such context since it doesn't
+// have instructions. To fix this, we need to mark all inlinee with entry probe
+// but without instructions as having zero size.
+class BinarySizeContextTracker {
+public:
+  // Add instruction with given size to a context
+  void addInstructionForContext(const SampleContextFrameVector &Context,
+                                uint32_t InstrSize);
+
+  // Get function size with a specific context. When there's no exact match
+  // for the given context, try to retrieve the size of that function from
+  // closest matching context.
+  uint32_t getFuncSizeForContext(const SampleContext &Context);
+
+  // For inlinees that are full optimized away, we can establish zero size using
+  // their remaining probes.
+  void trackInlineesOptimizedAway(MCPseudoProbeDecoder &ProbeDecoder);
+
+  void dump() { RootContext.dumpTree(); }
+
+private:
+  using ProbeFrameStack = SmallVector<std::pair<StringRef, uint32_t>>;
+  void trackInlineesOptimizedAway(MCPseudoProbeDecoder &ProbeDecoder,
+                              MCDecodedPseudoProbeInlineTree &ProbeNode,
+                              ProbeFrameStack &Context);
+
+  // Root node for context trie tree, node that this is a reverse context trie
+  // with callee as parent and caller as child. This way we can traverse from
+  // root to find the best/longest matching context if an exact match does not
+  // exist. It gives us the best possible estimate for function's post-inline,
+  // post-optimization byte size.
+  ContextTrieNode RootContext;
+};
+
+using OffsetRange = std::pair<uint64_t, uint64_t>;
 
 class ProfiledBinary {
   // Absolute path of the binary.
@@ -118,27 +185,51 @@ class ProfiledBinary {
   // A list of text sections sorted by start RVA and size. Used to check
   // if a given RVA is a valid code address.
   std::set<std::pair<uint64_t, uint64_t>> TextSections;
-  // Function offset to name mapping.
-  std::unordered_map<uint64_t, std::string> FuncStartAddrMap;
+
+  // A map of mapping function name to BinaryFunction info.
+  std::unordered_map<std::string, BinaryFunction> BinaryFunctions;
+
+  // An ordered map of mapping function's start offset to function range
+  // relevant info. Currently to determine if the offset of ELF is the start of
+  // a real function, we leverage the function range info from DWARF.
+  std::map<uint64_t, FuncRange> StartOffset2FuncRangeMap;
+
   // Offset to context location map. Used to expand the context.
-  std::unordered_map<uint64_t, FrameLocationStack> Offset2LocStackMap;
+  std::unordered_map<uint64_t, SampleContextFrameVector> Offset2LocStackMap;
+
+  // Offset to instruction size map. Also used for quick offset lookup.
+  std::unordered_map<uint64_t, uint64_t> Offset2InstSizeMap;
+
   // An array of offsets of all instructions sorted in increasing order. The
   // sorting is needed to fast advance to the next forward/backward instruction.
-  std::vector<uint64_t> CodeAddrs;
+  std::vector<uint64_t> CodeAddrOffsets;
   // A set of call instruction offsets. Used by virtual unwinding.
   std::unordered_set<uint64_t> CallAddrs;
   // A set of return instruction offsets. Used by virtual unwinding.
   std::unordered_set<uint64_t> RetAddrs;
 
+  // Estimate and track function prolog and epilog ranges.
   PrologEpilogTracker ProEpilogTracker;
+
+  // Track function sizes under different context
+  BinarySizeContextTracker FuncSizeTracker;
 
   // The symbolizer used to get inline context for an instruction.
   std::unique_ptr<symbolize::LLVMSymbolizer> Symbolizer;
+
+  // String table owning function name strings created from the symbolizer.
+  std::unordered_set<std::string> NameStrings;
+
+  // A collection of functions to print disassembly for.
+  StringSet<> DisassembleFunctionSet;
 
   // Pseudo probe decoder
   MCPseudoProbeDecoder ProbeDecoder;
 
   bool UsePseudoProbes = false;
+
+  // Whether we need to symbolize all instructions to get function context size.
+  bool TrackFuncContextSize = false;
 
   // Indicate if the base loading address is parsed from the mmap event or uses
   // the preferred address
@@ -157,6 +248,14 @@ class ProfiledBinary {
   void setUpDisassembler(const ELFObjectFileBase *Obj);
   void setupSymbolizer();
 
+  // Load debug info of subprograms from DWARF section.
+  void loadSymbolsFromDWARF(ObjectFile &Obj);
+
+  // A function may be spilt into multiple non-continuous address ranges. We use
+  // this to set whether start offset of a function is the real entry of the
+  // function and also set false to the non-function label.
+  void setIsFuncEntry(uint64_t Offset, StringRef RangeSymName);
+
   /// Dissassemble the text section and build various address maps.
   void disassemble(const ELFObjectFileBase *O);
 
@@ -164,9 +263,9 @@ class ProfiledBinary {
   bool dissassembleSymbol(std::size_t SI, ArrayRef<uint8_t> Bytes,
                           SectionSymbolsTy &Symbols, const SectionRef &Section);
   /// Symbolize a given instruction pointer and return a full call context.
-  FrameLocationStack symbolize(const InstructionPointer &IP,
-                               bool UseCanonicalFnName = false);
-
+  SampleContextFrameVector symbolize(const InstructionPointer &IP,
+                                     bool UseCanonicalFnName = false,
+                                     bool UseProbeDiscriminator = false);
   /// Decode the interesting parts of the binary and build internal data
   /// structures. On high level, the parts of interest are:
   ///   1. Text sections, including the main code section and the PLT
@@ -175,15 +274,12 @@ class ProfiledBinary {
   ///   3. Pseudo probe related sections, used by probe-based profile
   ///   generation.
   void load();
-  const FrameLocationStack &getFrameLocationStack(uint64_t Offset) const {
-    auto I = Offset2LocStackMap.find(Offset);
-    assert(I != Offset2LocStackMap.end() &&
-           "Can't find location for offset in the binary");
-    return I->second;
-  }
 
 public:
-  ProfiledBinary(StringRef Path) : Path(Path), ProEpilogTracker(this) {
+  ProfiledBinary(const StringRef Path)
+      : Path(Path), ProEpilogTracker(this),
+        TrackFuncContextSize(EnableCSPreInliner &&
+                             UseContextCostForPreInliner) {
     setupSymbolizer();
     load();
   }
@@ -211,7 +307,7 @@ public:
 
   bool addressIsCode(uint64_t Address) const {
     uint64_t Offset = virtualAddrToOffset(Address);
-    return Offset2LocStackMap.find(Offset) != Offset2LocStackMap.end();
+    return Offset2InstSizeMap.find(Offset) != Offset2InstSizeMap.end();
   }
   bool addressIsCall(uint64_t Address) const {
     uint64_t Offset = virtualAddrToOffset(Address);
@@ -227,29 +323,79 @@ public:
   }
 
   uint64_t getAddressforIndex(uint64_t Index) const {
-    return offsetToVirtualAddr(CodeAddrs[Index]);
+    return offsetToVirtualAddr(CodeAddrOffsets[Index]);
   }
 
   bool usePseudoProbes() const { return UsePseudoProbes; }
-  // Get the index in CodeAddrs for the address
+  // Get the index in CodeAddrOffsets for the address
   // As we might get an address which is not the code
   // here it would round to the next valid code address by
   // using lower bound operation
+  uint32_t getIndexForOffset(uint64_t Offset) const {
+    auto Low = llvm::lower_bound(CodeAddrOffsets, Offset);
+    return Low - CodeAddrOffsets.begin();
+  }
   uint32_t getIndexForAddr(uint64_t Address) const {
     uint64_t Offset = virtualAddrToOffset(Address);
-    auto Low = llvm::lower_bound(CodeAddrs, Offset);
-    return Low - CodeAddrs.begin();
+    return getIndexForOffset(Offset);
   }
 
   uint64_t getCallAddrFromFrameAddr(uint64_t FrameAddr) const {
-    return getAddressforIndex(getIndexForAddr(FrameAddr) - 1);
+    auto I = getIndexForAddr(FrameAddr);
+    FrameAddr = I ? getAddressforIndex(I - 1) : 0;
+    if (FrameAddr && addressIsCall(FrameAddr))
+      return FrameAddr;
+    return 0;
   }
 
-  StringRef getFuncFromStartOffset(uint64_t Offset) {
-    return FuncStartAddrMap[Offset];
+  FuncRange *findFuncRangeForStartOffset(uint64_t Offset) {
+    auto I = StartOffset2FuncRangeMap.find(Offset);
+    if (I == StartOffset2FuncRangeMap.end())
+      return nullptr;
+    return &I->second;
   }
 
-  Optional<FrameLocation> getInlineLeafFrameLoc(uint64_t Offset) {
+  // Binary search the function range which includes the input offset.
+  FuncRange *findFuncRangeForOffset(uint64_t Offset) {
+    auto I = StartOffset2FuncRangeMap.upper_bound(Offset);
+    if (I == StartOffset2FuncRangeMap.begin())
+      return nullptr;
+    I--;
+
+    if (Offset >= I->second.EndOffset)
+      return nullptr;
+
+    return &I->second;
+  }
+
+  // Get all ranges of one function.
+  RangesTy getRangesForOffset(uint64_t Offset) {
+    auto *FRange = findFuncRangeForOffset(Offset);
+    // Ignore the range which falls into plt section or system lib.
+    if (!FRange)
+      return RangesTy();
+
+    return FRange->Func->Ranges;
+  }
+
+  uint32_t getFuncSizeForContext(SampleContext &Context) {
+    return FuncSizeTracker.getFuncSizeForContext(Context);
+  }
+
+  // Load the symbols from debug table and populate into symbol list.
+  void populateSymbolListFromDWARF(ProfileSymbolList &SymbolList);
+
+  const SampleContextFrameVector &
+  getFrameLocationStack(uint64_t Offset, bool UseProbeDiscriminator = false) {
+    auto I = Offset2LocStackMap.emplace(Offset, SampleContextFrameVector());
+    if (I.second) {
+      InstructionPointer IP(this, Offset);
+      I.first->second = symbolize(IP, true, UseProbeDiscriminator);
+    }
+    return I.first->second;
+  }
+
+  Optional<SampleContextFrame> getInlineLeafFrameLoc(uint64_t Offset) {
     const auto &Stack = getFrameLocationStack(Offset);
     if (Stack.empty())
       return {};
@@ -257,24 +403,33 @@ public:
   }
 
   // Compare two addresses' inline context
-  bool inlineContextEqual(uint64_t Add1, uint64_t Add2) const;
+  bool inlineContextEqual(uint64_t Add1, uint64_t Add2);
 
-  // Get the context string of the current stack with inline context filled in.
+  // Get the full context of the current stack with inline context filled in.
   // It will search the disassembling info stored in Offset2LocStackMap. This is
   // used as the key of function sample map
-  std::string getExpandedContextStr(const SmallVectorImpl<uint64_t> &Stack,
-                                    bool &WasLeafInlined) const;
+  SampleContextFrameVector
+  getExpandedContext(const SmallVectorImpl<uint64_t> &Stack,
+                     bool &WasLeafInlined);
+  // Go through instructions among the given range and record its size for the
+  // inline context.
+  void computeInlinedContextSizeForRange(uint64_t StartOffset,
+                                         uint64_t EndOffset);
 
   const MCDecodedPseudoProbe *getCallProbeForAddr(uint64_t Address) const {
     return ProbeDecoder.getCallProbeForAddr(Address);
   }
 
-  void
-  getInlineContextForProbe(const MCDecodedPseudoProbe *Probe,
-                           SmallVectorImpl<std::string> &InlineContextStack,
-                           bool IncludeLeaf = false) const {
-    return ProbeDecoder.getInlineContextForProbe(Probe, InlineContextStack,
-                                                 IncludeLeaf);
+  void getInlineContextForProbe(const MCDecodedPseudoProbe *Probe,
+                                SampleContextFrameVector &InlineContextStack,
+                                bool IncludeLeaf = false) const {
+    SmallVector<MCPseduoProbeFrameLocation, 16> ProbeInlineContext;
+    ProbeDecoder.getInlineContextForProbe(Probe, ProbeInlineContext,
+                                          IncludeLeaf);
+    for (auto &Callsite : ProbeInlineContext) {
+      InlineContextStack.emplace_back(Callsite.first,
+                                      LineLocation(Callsite.second, 0));
+    }
   }
   const AddressProbesMap &getAddress2ProbesMap() const {
     return ProbeDecoder.getAddress2ProbesMap();
@@ -287,6 +442,8 @@ public:
   getInlinerDescForProbe(const MCDecodedPseudoProbe *Probe) {
     return ProbeDecoder.getInlinerDescForProbe(Probe);
   }
+
+  bool getTrackFuncContextSize() { return TrackFuncContextSize; }
 
   bool getIsLoadedByMMap() { return IsLoadedByMMap; }
 

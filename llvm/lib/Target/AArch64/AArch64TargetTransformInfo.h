@@ -125,11 +125,6 @@ public:
     return ST->getMinVectorRegisterBitWidth();
   }
 
-  Optional<unsigned> getMaxVScale() const {
-    if (ST->hasSVE())
-      return AArch64::SVEMaxBitsPerVector / AArch64::SVEBitsPerBlock;
-    return BaseT::getMaxVScale();
-  }
 
   /// Try to return an estimate cost factor that can be used as a multiplier
   /// when scalarizing an operation for a vector with ElementCount \p VF.
@@ -138,9 +133,8 @@ public:
   unsigned getMaxNumElements(ElementCount VF) const {
     if (!VF.isScalable())
       return VF.getFixedValue();
-    Optional<unsigned> MaxNumVScale = getMaxVScale();
-    assert(MaxNumVScale && "Expected valid max vscale value");
-    return *MaxNumVScale * VF.getKnownMinValue();
+
+    return VF.getKnownMinValue() * ST->getVScaleForTuning();
   }
 
   unsigned getMaxInterleaveFactor(unsigned VF);
@@ -180,8 +174,7 @@ public:
   InstructionCost getSpliceCost(VectorType *Tp, int Index);
 
   InstructionCost getArithmeticInstrCost(
-      unsigned Opcode, Type *Ty,
-      TTI::TargetCostKind CostKind = TTI::TCK_RecipThroughput,
+      unsigned Opcode, Type *Ty, TTI::TargetCostKind CostKind,
       TTI::OperandValueKind Opd1Info = TTI::OK_AnyValue,
       TTI::OperandValueKind Opd2Info = TTI::OK_AnyValue,
       TTI::OperandValueProperties Opd1PropInfo = TTI::OP_None,
@@ -296,10 +289,11 @@ public:
     return BaseT::isLegalNTStore(DataType, Alignment);
   }
 
+  bool enableOrderedReductions() const { return true; }
+
   InstructionCost getInterleavedMemoryOpCost(
       unsigned Opcode, Type *VecTy, unsigned Factor, ArrayRef<unsigned> Indices,
-      Align Alignment, unsigned AddressSpace,
-      TTI::TargetCostKind CostKind = TTI::TCK_SizeAndLatency,
+      Align Alignment, unsigned AddressSpace, TTI::TargetCostKind CostKind,
       bool UseMaskForCond = false, bool UseMaskForGaps = false);
 
   bool
@@ -317,9 +311,9 @@ public:
   bool isLegalToVectorizeReduction(const RecurrenceDescriptor &RdxDesc,
                                    ElementCount VF) const;
 
-  InstructionCost getArithmeticReductionCost(
-      unsigned Opcode, VectorType *Ty, Optional<FastMathFlags> FMF,
-      TTI::TargetCostKind CostKind = TTI::TCK_RecipThroughput);
+  InstructionCost getArithmeticReductionCost(unsigned Opcode, VectorType *Ty,
+                                             Optional<FastMathFlags> FMF,
+                                             TTI::TargetCostKind CostKind);
 
   InstructionCost getShuffleCost(TTI::ShuffleKind Kind, VectorType *Tp,
                                  ArrayRef<int> Mask, int Index,
